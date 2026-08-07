@@ -1,0 +1,1348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Tummy Scanner 3000</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: #0b1220; color: #eaf6ff;
+    font-family: "Trebuchet MS", "Comic Sans MS", Verdana, system-ui, sans-serif;
+    user-select: none; -webkit-user-select: none;
+    overscroll-behavior: none;
+  }
+  #app { position: fixed; inset: 0; }
+
+  video {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; background: #000;
+  }
+  #fx { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  .screen {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center;
+    justify-content: safe center;      /* never clips the top on short screens */
+    padding: calc(20px + env(safe-area-inset-top)) calc(18px + env(safe-area-inset-right))
+             calc(20px + env(safe-area-inset-bottom)) calc(18px + env(safe-area-inset-left));
+    text-align: center; gap: 16px;
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
+  .hidden { display: none !important; }
+
+  /* ---- small / short phones ---- */
+  @media (max-height: 700px) {
+    .screen { gap: 11px; }
+    .blob { font-size: clamp(38px, 13vw, 60px); }
+    h1 { font-size: clamp(21px, 6.6vw, 30px); }
+    .bigbtn { padding: 15px 32px; }
+    .factbox { padding: 12px 14px; }
+  }
+  @media (max-height: 580px) {
+    .screen { gap: 8px; }
+    .blob { display: none; }
+    .sub { font-size: 13px; }
+  }
+  @media (max-width: 360px) {
+    .chip { padding: 7px 10px; font-size: 13px; border-radius: 13px; }
+    .food { border-radius: 14px; padding: 8px 0 6px; }
+  }
+
+  /* ---------- START ---------- */
+  #start {
+    background: radial-gradient(circle at 50% 30%, #16324f 0%, #0b1220 70%);
+  }
+  h1 {
+    margin: 0; font-size: clamp(28px, 9vw, 46px); line-height: 1.1;
+    letter-spacing: 1px;
+    text-shadow: 0 0 22px rgba(80, 255, 160, .45);
+  }
+  .sub { margin: 0; font-size: clamp(14px, 4.2vw, 19px); opacity: .78; max-width: 22ch; line-height: 1.45; }
+
+  .bigbtn {
+    margin-top: 10px;
+    border: none; border-radius: 999px;
+    padding: 20px 44px;
+    font: inherit; font-weight: bold; font-size: clamp(19px, 5.6vw, 25px);
+    color: #04240f;
+    background: linear-gradient(180deg, #7dffb0, #24c46b);
+    box-shadow: 0 10px 0 #0d7c40, 0 16px 34px rgba(36, 196, 107, .45);
+    transition: transform .08s, box-shadow .08s;
+  }
+  .bigbtn:active { transform: translateY(7px); box-shadow: 0 3px 0 #0d7c40, 0 6px 16px rgba(36,196,107,.35); }
+  .bigbtn.red { color: #2c0000; background: linear-gradient(180deg, #ffb3a7, #ff5a3c); box-shadow: 0 10px 0 #a32a13, 0 16px 34px rgba(255,90,60,.4); }
+  .bigbtn.red:active { box-shadow: 0 3px 0 #a32a13; }
+
+  .blob { font-size: clamp(56px, 20vw, 110px); filter: drop-shadow(0 6px 18px rgba(0,0,0,.6)); animation: bob 2.6s ease-in-out infinite; }
+  @keyframes bob { 0%,100% { transform: translateY(0) rotate(-4deg);} 50% { transform: translateY(-14px) rotate(4deg);} }
+
+  /* ---------- HUD ---------- */
+  #hud {
+    position: absolute; inset: 0; pointer-events: none;
+    display: flex; flex-direction: column; justify-content: space-between;
+    padding: calc(14px + env(safe-area-inset-top)) 14px calc(14px + env(safe-area-inset-bottom));
+  }
+  .hudrow { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; }
+  @media (max-width: 390px) { #freezeTxt, #torchTxt { display: none; } }
+  .chip {
+    pointer-events: auto;
+    background: rgba(6, 14, 26, .68);
+    border: 2px solid rgba(160, 195, 240, .34);
+    backdrop-filter: blur(6px);
+    border-radius: 16px; padding: 9px 14px;
+    font-size: 15px; font-weight: bold; color: #dbe8fb;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .chip.warn { border-color: rgba(255,120,90,.55); color: #ffdfd6; }
+  .chip:active { transform: scale(.94); }
+
+  #status {
+    align-self: center; font-size: clamp(16px, 4.6vw, 21px); font-weight: bold;
+    background: rgba(6, 14, 26, .7); backdrop-filter: blur(6px);
+    padding: 12px 20px; border-radius: 18px; max-width: 92%;
+    border: 2px solid rgba(160, 195, 240, .3);
+    text-shadow: 0 1px 6px rgba(0,0,0,.7);
+    color: #e6efff;
+  }
+  #status.bad { border-color: rgba(255,110,80,.6); background: rgba(46,8,4,.7); }
+  #status.good { border-color: rgba(120,255,170,.6); background: rgba(4,42,22,.7); }
+
+  /* ---------- FOOD TRAY ---------- */
+  #tray {
+    pointer-events: auto;
+    background: rgba(6, 16, 28, .72); backdrop-filter: blur(10px);
+    border: 2px solid rgba(255,255,255,.14);
+    border-radius: 24px; padding: 12px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  #tray .label { font-size: 13px; opacity: .8; letter-spacing: .5px; }
+  .foods { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  .food {
+    border: none; border-radius: 18px; padding: 10px 0 8px;
+    background: rgba(255,255,255,.09);
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    font: inherit; color: #eaf6ff;
+    transition: transform .08s, background .15s;
+  }
+  .food .emoji { font-size: clamp(24px, 7.4vw, 34px); line-height: 1; }
+  .food .name { font-size: 10px; opacity: .72; }
+  .food:active { transform: scale(.88); background: rgba(255,255,255,.2); }
+
+  /* ---------- OVERLAYS ---------- */
+  #flash { position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity .28s; }
+  #result { background: radial-gradient(circle at 50% 30%, #16324f 0%, #0b1220 72%); }
+  #result.clean { background: radial-gradient(circle at 50% 35%, #0e5233 0%, #061a12 75%); }
+  #result h1 { text-shadow: 0 0 26px rgba(140,200,255,.5); }
+  #result.clean h1 { text-shadow: 0 0 26px rgba(120,255,170,.6); }
+  #diet { background: radial-gradient(circle at 50% 25%, #16324f 0%, #0b1220 72%); }
+  #dietFoods { grid-template-columns: repeat(4, 1fr); gap: 7px; }
+  @media (max-height: 700px) { #dietFoods { grid-template-columns: repeat(6, 1fr); } }
+  @media (max-width: 340px) { #dietFoods { grid-template-columns: repeat(3, 1fr); } }
+  .food.on {
+    background: rgba(255,255,255,.26);
+    outline: 3px solid rgba(160,210,255,.85);
+  }
+  .food.on .name { opacity: 1; }
+  .factbox {
+    background: rgba(255,255,255,.08); border: 2px solid rgba(255,255,255,.16);
+    border-radius: 20px; padding: 16px 18px; max-width: 30ch;
+    font-size: clamp(14px, 4.1vw, 17px); line-height: 1.5;
+  }
+  #err { color: #ffd9d0; font-size: 15px; line-height: 1.5; max-width: 32ch; }
+  code { background: rgba(255,255,255,.12); padding: 1px 6px; border-radius: 6px; font-size: .92em; }
+
+  /* ---------- GALLERY ---------- */
+  .linkbtn {
+    border: 2px solid rgba(255,255,255,.22); background: rgba(255,255,255,.07);
+    color: #eaf6ff; font: inherit; font-size: 16px; font-weight: bold;
+    border-radius: 999px; padding: 12px 26px;
+  }
+  .linkbtn:active { transform: scale(.95); }
+  #gallery { background: #0b1220; justify-content: flex-start; padding-top: calc(20px + env(safe-area-inset-top)); gap: 14px; }
+  #gallery h1 { font-size: clamp(22px, 6.5vw, 32px); }
+  #shots {
+    width: 100%; flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; align-content: start;
+  }
+  .shot { position: relative; border-radius: 16px; overflow: hidden; border: 2px solid rgba(125,255,176,.28); background: #000; }
+  .shot img { width: 100%; display: block; aspect-ratio: 3/4; object-fit: cover; }
+  .shot .cap {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    background: linear-gradient(transparent, rgba(0,0,0,.85));
+    padding: 16px 8px 6px; font-size: 11px; text-align: left;
+  }
+  .shot .del {
+    position: absolute; top: 6px; right: 6px; width: 30px; height: 30px;
+    border-radius: 50%; border: none; background: rgba(0,0,0,.6); color: #ffb9a8;
+    font-size: 15px; line-height: 1; font-weight: bold;
+  }
+  #viewer { background: rgba(4,8,14,.96); z-index: 20; }
+  #viewer img { max-width: 100%; max-height: 74vh; border-radius: 18px; border: 2px solid rgba(125,255,176,.3); }
+  .empty { opacity: .55; font-size: 15px; grid-column: 1 / -1; padding: 40px 10px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="fx"></canvas>
+  <div id="flash"></div>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div class="hudrow">
+      <div class="chip" id="count">🪱 <span id="countnum">0</span></div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end;">
+        <div class="chip" id="freezeBtn">❄️ <span id="freezeTxt">Hold</span></div>
+        <div class="chip" id="saveBtn">📸</div>
+        <div class="chip" id="torchBtn">🔦 <span id="torchTxt">Light</span></div>
+        <div class="chip warn" id="stopBtn">✕</div>
+      </div>
+    </div>
+
+    <div id="status">Point at the belly…</div>
+
+    <div id="revealWrap" class="hidden" style="pointer-events:auto; display:flex; justify-content:center;">
+      <button class="bigbtn" id="revealBtn" style="padding:18px 38px; font-size:21px;">👁️ SEE INSIDE</button>
+    </div>
+
+    <div id="doneWrap" class="hidden" style="pointer-events:auto; display:flex; justify-content:center;">
+      <button class="bigbtn" id="doneBtn" style="padding:16px 34px; font-size:19px;">WHAT DOES IT MEAN?</button>
+    </div>
+  </div>
+
+  <!-- START -->
+  <div class="screen" id="start">
+    <div class="blob">🫃</div>
+    <h1>TUMMY<br>SCANNER 3000</h1>
+    <p class="sub">Let's look inside and see what's living in there…</p>
+    <button class="bigbtn" id="go">SCAN MY BELLY</button>
+    <button class="linkbtn" id="openGallery">📁 Saved scans (<span id="galcount">0</span>)</button>
+    <p class="sub" style="font-size:12px; opacity:.45; max-width:28ch;">A pretend X-ray game. Not a real medical scanner.</p>
+    <div id="err" class="hidden"></div>
+  </div>
+
+  <!-- DIET: parent fills this in before scanning -->
+  <div class="screen hidden" id="diet">
+    <h1 style="font-size:clamp(22px,6.5vw,32px);">WHAT DID YOU<br>EAT TODAY?</h1>
+    <p class="sub">Tap everything you had. Be honest — the scanner knows 👀</p>
+    <div id="dietFoods" class="foods" style="width:100%; max-width:420px;"></div>
+    <div class="sub" id="dietTally" style="font-size:13px; min-height:1.2em;"></div>
+    <button class="bigbtn" id="toScan">START THE SCAN</button>
+  </div>
+
+  <!-- RESULT -->
+  <div class="screen hidden" id="result">
+    <div class="blob" id="resultEmoji">🪱</div>
+    <h1 id="resultTitle" style="font-size:clamp(22px,7vw,34px);"></h1>
+    <div class="factbox" id="resultBody"></div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center;">
+      <button class="bigbtn" id="again">SCAN AGAIN</button>
+    </div>
+  </div>
+
+  <!-- GALLERY -->
+  <div class="screen hidden" id="gallery">
+    <h1>📁 SAVED SCANS</h1>
+    <p class="sub" style="font-size:13px;">Tap one to show it to someone else.</p>
+    <div id="shots"></div>
+    <button class="linkbtn" id="galBack">← Back</button>
+  </div>
+
+  <!-- VIEWER -->
+  <div class="screen hidden" id="viewer">
+    <img id="viewerImg" alt="Saved belly scan">
+    <div id="viewerCap" class="sub" style="font-size:14px;"></div>
+    <button class="bigbtn" id="viewerBack">CLOSE</button>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ------------------------------------------------------------------
+  // helpers
+  // ------------------------------------------------------------------
+  var $ = function (id) { return document.getElementById(id); };
+  var rand = function (a, b) { return a + Math.random() * (b - a); };
+  var randInt = function (a, b) { return Math.floor(rand(a, b + 1)); };
+  var pick = function (arr) { return arr[Math.floor(Math.random() * arr.length)]; };
+  var clamp = function (v, a, b) { return v < a ? a : v > b ? b : v; };
+
+  var video = $("cam"), canvas = $("fx"), ctx = canvas.getContext("2d");
+  var W = 0, H = 0, DPR = 1;
+  // dropped to 1 automatically if the phone can't keep up
+  var maxDPR = 2, lowQ = false;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, maxDPR);
+    W = canvas.clientWidth; H = canvas.clientHeight;
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener("resize", resize);
+  window.addEventListener("orientationchange", function () { setTimeout(resize, 250); });
+
+  function buzz(ms) { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) {} }
+
+  // stop the screen dimming while a scan is on
+  var wakeLock = null;
+  function keepAwake(on) {
+    try {
+      if (on && navigator.wakeLock && !wakeLock) {
+        navigator.wakeLock.request("screen").then(function (wl) {
+          wakeLock = wl;
+          wl.addEventListener("release", function () { wakeLock = null; });
+        }).catch(function () {});
+      } else if (!on && wakeLock) {
+        wakeLock.release().catch(function () {});
+        wakeLock = null;
+      }
+    } catch (e) {}
+  }
+
+  // tiny sound engine (no files needed)
+  var AC = null;
+  function audio() {
+    if (!AC) { var C = window.AudioContext || window.webkitAudioContext; if (C) AC = new C(); }
+    if (AC && AC.state === "suspended") AC.resume();
+    return AC;
+  }
+  // The only sound in the app: the soft hiss of the scanner while it runs.
+  var noiseSrc = null, noiseGain = null;
+
+  function startNoise() {
+    var a = audio();
+    if (!a || noiseSrc) return;
+    try {
+      var len = Math.floor(a.sampleRate * 2);
+      var buf = a.createBuffer(1, len, a.sampleRate);
+      var ch = buf.getChannelData(0);
+      for (var i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * 0.7;
+
+      noiseSrc = a.createBufferSource();
+      noiseSrc.buffer = buf;
+      noiseSrc.loop = true;
+
+      var bp = a.createBiquadFilter();
+      bp.type = "bandpass"; bp.frequency.value = 1500; bp.Q.value = 0.6;
+      var lp = a.createBiquadFilter();
+      lp.type = "lowpass"; lp.frequency.value = 2800;
+
+      noiseGain = a.createGain();
+      noiseGain.gain.setValueAtTime(0, a.currentTime);
+      noiseGain.gain.linearRampToValueAtTime(0.05, a.currentTime + 0.7);
+
+      noiseSrc.connect(bp); bp.connect(lp); lp.connect(noiseGain);
+      noiseGain.connect(a.destination);
+      noiseSrc.start();
+    } catch (e) { noiseSrc = null; noiseGain = null; }
+  }
+
+  function stopNoise() {
+    if (!noiseSrc) return;
+    try {
+      var a = audio();
+      noiseGain.gain.cancelScheduledValues(a.currentTime);
+      noiseGain.gain.setValueAtTime(noiseGain.gain.value, a.currentTime);
+      noiseGain.gain.linearRampToValueAtTime(0, a.currentTime + 0.35);
+      noiseSrc.stop(a.currentTime + 0.45);
+    } catch (e) {}
+    noiseSrc = null; noiseGain = null;
+  }
+
+  // ------------------------------------------------------------------
+  // camera + flashlight
+  // ------------------------------------------------------------------
+  var stream = null, track = null, torchOn = false, torchSupported = false;
+
+  function startCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      return Promise.reject(new Error("NO_API"));
+    }
+    return navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      }
+    }).then(function (s) {
+      stream = s;
+      video.srcObject = s;
+      track = s.getVideoTracks()[0];
+      var caps = track.getCapabilities ? track.getCapabilities() : {};
+      torchSupported = !!caps.torch;
+      $("torchBtn").style.opacity = torchSupported ? "1" : "0.4";
+      return video.play().catch(function () {});
+    });
+  }
+
+  function setTorch(on) {
+    if (!track || !torchSupported) return Promise.resolve(false);
+    return track.applyConstraints({ advanced: [{ torch: !!on }] })
+      .then(function () {
+        torchOn = !!on;
+        $("torchTxt").textContent = torchOn ? "ON" : "Light";
+        $("torchBtn").style.borderColor = torchOn ? "rgba(255,230,120,.9)" : "rgba(160,195,240,.34)";
+        return true;
+      })
+      .catch(function () { return false; });
+  }
+
+  function stopCamera() {
+    setTorch(false);
+    if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); }
+    stream = null; track = null; video.srcObject = null;
+  }
+
+  // ------------------------------------------------------------------
+  // FREEZE-FRAME  (hold the picture so you can show it to someone else)
+  // ------------------------------------------------------------------
+  var isFrozen = false, frozenFrame = null, torchBeforeFreeze = false;
+
+  function drawCover(c, src, sw, sh, w, h, ox, oy, zoom) {
+    if (!sw || !sh) return;
+    var s = Math.max(w / sw, h / sh) * (zoom || 1);
+    var dw = sw * s, dh = sh * s;
+    c.drawImage(src, (w - dw) / 2 + (ox || 0), (h - dh) / 2 + (oy || 0), dw, dh);
+  }
+
+  // ------------------------------------------------------------------
+  // MOTION SENSORS — moving the phone moves the picture, like a real probe
+  // ------------------------------------------------------------------
+  var tiltRaw = { x: 0, y: 0 };     // -1..1 from the gyroscope
+  var tilt = { x: 0, y: 0 };        // smoothed
+  var panX = 0, panY = 0;           // pixels the image is shifted by
+  var frozenPan = { x: 0, y: 0 };
+  var motionMag = 0, motionOn = false, motionAsked = false;
+
+  function onOrient(e) {
+    if (e.gamma == null && e.beta == null) return;
+    motionOn = true;
+    tiltRaw.x = clamp((e.gamma || 0) / 40, -1, 1);          // roll left/right
+    tiltRaw.y = clamp(((e.beta || 0) - 50) / 40, -1, 1);    // pitch, around a natural holding angle
+  }
+
+  function onMotion(e) {
+    var a = e.accelerationIncludingGravity;
+    if (!a) return;
+    motionOn = true;
+    var m = Math.sqrt((a.x || 0) * (a.x || 0) + (a.y || 0) * (a.y || 0) + (a.z || 0) * (a.z || 0));
+    motionMag = motionMag * 0.85 + clamp(Math.abs(m - 9.81) / 6, 0, 1) * 0.15;
+  }
+
+  function enableMotion() {
+    if (motionAsked) return;
+    motionAsked = true;
+    var DO = window.DeviceOrientationEvent, DM = window.DeviceMotionEvent;
+    function attach() {
+      window.addEventListener("deviceorientation", onOrient, true);
+      window.addEventListener("devicemotion", onMotion, true);
+    }
+    // iOS needs an explicit prompt from inside a tap; Android just works.
+    if (DO && typeof DO.requestPermission === "function") {
+      DO.requestPermission().then(function (r) { if (r === "granted") attach(); }).catch(function () {});
+      if (DM && typeof DM.requestPermission === "function") DM.requestPermission().catch(function () {});
+    } else {
+      attach();
+    }
+  }
+
+  function updateMotion(dt) {
+    var k = Math.min(1, dt * 5.5);
+    tilt.x += (tiltRaw.x - tilt.x) * k;
+    tilt.y += (tiltRaw.y - tilt.y) * k;
+    // the hiss swells a little when the probe is moving
+    if (noiseGain) {
+      try { noiseGain.gain.value = clamp(0.04 + motionMag * 0.06, 0, 0.11); } catch (e) {}
+    }
+    if (isFrozen) { panX = frozenPan.x; panY = frozenPan.y; return; }
+    panX = tilt.x * W * 0.17;
+    panY = tilt.y * H * 0.09;
+  }
+
+  function setFrozen(on) {
+    if (on) {
+      var vw = video.videoWidth, vh = video.videoHeight;
+      if (!vw || !vh) { setStatus("Camera isn't ready yet…"); return; }
+      frozenFrame = document.createElement("canvas");
+      frozenFrame.width = vw; frozenFrame.height = vh;
+      frozenFrame.getContext("2d").drawImage(video, 0, 0, vw, vh);
+      isFrozen = true;
+      frozenPan.x = panX; frozenPan.y = panY;   // lock the parallax too
+      torchBeforeFreeze = torchOn;
+      setTorch(false);
+      setStatus("Picture held ❄️ — take the phone off and show them!");
+    } else {
+      isFrozen = false; frozenFrame = null;
+      if (torchBeforeFreeze) setTorch(true);
+      setStatus("Live again — point at the belly.");
+    }
+    $("freezeTxt").textContent = isFrozen ? "Live" : "Hold";
+    $("freezeBtn").firstChild.nodeValue = isFrozen ? "▶️ " : "❄️ ";
+    $("freezeBtn").style.borderColor = isFrozen ? "rgba(150,220,255,.9)" : "rgba(160,195,240,.34)";
+    buzz(25);
+  }
+
+  // ------------------------------------------------------------------
+  // SAVED SCANS  (kept on the phone so the other kid can see it later)
+  // ------------------------------------------------------------------
+  var STORE = "bellyScans.v1", MAX_SHOTS = 8;
+
+  function loadShots() {
+    try { return JSON.parse(localStorage.getItem(STORE) || "[]"); } catch (e) { return []; }
+  }
+  function persistShots(list) {
+    try { localStorage.setItem(STORE, JSON.stringify(list)); return true; } catch (e) { return false; }
+  }
+  function updateGalCount() { $("galcount").textContent = loadShots().length; }
+
+  function exportComposite() {
+    var s = Math.min(2, 900 / Math.max(1, W));
+    var cv = document.createElement("canvas");
+    cv.width = Math.round(W * s); cv.height = Math.round(H * s);
+    var c = cv.getContext("2d");
+    c.setTransform(s, 0, 0, s, 0, 0);
+    var t = performance.now() / 1000;
+    renderScan(c, W, H, t, { beam: false, worms: true });
+    // caption strip
+    var alive = worms.filter(function (w) { return !w.dying; }).length;
+    c.fillStyle = "rgba(0,0,0,.66)"; c.fillRect(0, H - 46, W, 46);
+    c.fillStyle = "#dfeaff";
+    c.font = "bold 20px Verdana, sans-serif";
+    c.textAlign = "left";
+    c.textBaseline = "middle";
+    c.fillText("🪱 " + alive + " worms detected", 14, H - 23);
+    return cv.toDataURL("image/jpeg", 0.72);
+  }
+
+  function saveScan() {
+    if (MODE !== "play" && MODE !== "result") return;
+    var img;
+    try { img = exportComposite(); } catch (e) { setStatus("Couldn't save that one 😕", "bad"); return; }
+    var list = loadShots();
+    list.unshift({
+      id: Date.now(),
+      when: new Date().toLocaleString(),
+      n: worms.filter(function (w) { return !w.dying; }).length,
+      img: img
+    });
+    while (list.length > MAX_SHOTS) list.pop();
+    var ok = persistShots(list);
+    while (!ok && list.length > 1) { list.pop(); ok = persistShots(list); }
+    updateGalCount();
+    flash("#ffffff");
+    buzz(40);
+    setStatus(ok ? "Saved 📁 — you can show this one again later!" : "Phone storage is full, couldn't save.", ok ? "good" : "bad");
+  }
+
+  function renderGallery() {
+    var box = $("shots");
+    var list = loadShots();
+    box.innerHTML = "";
+    if (!list.length) {
+      box.innerHTML = '<div class="empty">Nothing saved yet.<br>Do a scan and tap 📸 to keep it.</div>';
+      return;
+    }
+    list.forEach(function (item) {
+      var d = document.createElement("div");
+      d.className = "shot";
+      var im = document.createElement("img");
+      im.src = item.img; im.alt = "Scan with " + item.n + " worms";
+      im.addEventListener("click", function () {
+        $("viewerImg").src = item.img;
+        $("viewerCap").textContent = "🪱 " + item.n + " worms · " + item.when;
+        $("viewer").classList.remove("hidden");
+      });
+      var cap = document.createElement("div");
+      cap.className = "cap";
+      cap.textContent = "🪱 " + item.n + " · " + item.when;
+      var del = document.createElement("button");
+      del.className = "del"; del.textContent = "✕";
+      del.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        persistShots(loadShots().filter(function (s) { return s.id !== item.id; }));
+        renderGallery(); updateGalCount();
+      });
+      d.appendChild(im); d.appendChild(cap); d.appendChild(del);
+      box.appendChild(d);
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // the ultrasound "cone" — worms live inside this shape
+  // ------------------------------------------------------------------
+  function coneParams(w, h) {
+    return {
+      ax: w / 2, ay: -h * 0.03,
+      a0: Math.PI / 2 - 0.70, a1: Math.PI / 2 + 0.70,
+      rIn: h * 0.11, rOut: h * 1.40
+    };
+  }
+
+  function insideCone(x, y, pad) {
+    if (!W || !H) return true;
+    var k = coneParams(W, H);
+    pad = pad || 0;
+    var dx = x - k.ax, dy = y - k.ay;
+    var r = Math.sqrt(dx * dx + dy * dy);
+    if (r < k.rIn + pad || r > k.rOut - pad) return false;
+    var a = Math.atan2(dy, dx);
+    var ang = pad / Math.max(r, 1);
+    if (a < k.a0 + ang || a > k.a1 - ang) return false;
+    return y > pad + 60 && y < H - pad - 30;
+  }
+
+  function spawnPoint() {
+    for (var i = 0; i < 60; i++) {
+      var x = rand(W * 0.16, W * 0.84);
+      var y = rand(H * 0.30, H * 0.74);
+      if (insideCone(x, y, 40)) return { x: x, y: y };
+    }
+    return { x: W / 2, y: H * 0.5 };
+  }
+
+  // ------------------------------------------------------------------
+  // WORMS
+  // ------------------------------------------------------------------
+  function Worm(x, y) {
+    var sp = spawnPoint();
+    this.x = x != null ? x : sp.x;
+    this.y = y != null ? y : sp.y;
+    this.dir = rand(0, Math.PI * 2);
+    this.speed = rand(16, 40);
+    this.nSeg = randInt(12, 18);
+    this.segLen = rand(7, 10.5);
+    this.thick = rand(9, 15);
+    this.hue = rand(64, 104);
+    this.sat = rand(34, 52);
+    this.phase = rand(0, Math.PI * 2);
+    this.wig = rand(2.0, 3.4);
+    this.grow = 0;              // 0 -> 1 pop-in
+    this.dying = 0;             // 0 -> 1 fade-out
+    this.dead = false;
+    this.pts = [];
+    for (var i = 0; i < this.nSeg; i++) this.pts.push({ x: this.x, y: this.y });
+  }
+
+  Worm.prototype.kill = function () { if (!this.dying) this.dying = 0.0001; };
+
+  Worm.prototype.update = function (dt, t) {
+    if (this.grow < 1) this.grow = Math.min(1, this.grow + dt * 2.6);
+    if (this.dying) {
+      this.dying = Math.min(1, this.dying + dt * 1.5);
+      this.y -= dt * 42;
+      if (this.dying >= 1) this.dead = true;
+    }
+
+    // wander: sine wiggle + gentle random steering
+    this.dir += Math.sin(t * this.wig + this.phase) * dt * 2.4 + rand(-0.6, 0.6) * dt;
+
+    // keep them inside the ultrasound fan — bounce off the edge of the beam
+    var nx = this.x + Math.cos(this.dir) * this.speed * dt;
+    var ny = this.y + Math.sin(this.dir) * this.speed * dt;
+    if (this.dying || insideCone(nx, ny, this.thick * 2.2)) {
+      this.x = nx; this.y = ny;
+    } else {
+      // turn back toward the middle of the beam
+      var k = coneParams(W, H);
+      var toMid = Math.atan2(H * 0.55 - this.y, W / 2 - this.x);
+      var diff = Math.atan2(Math.sin(toMid - this.dir), Math.cos(toMid - this.dir));
+      this.dir += clamp(diff, -1, 1) * 0.55 + rand(-0.2, 0.2);
+    }
+    this.x = clamp(this.x, 8, Math.max(9, W - 8));
+    this.y = clamp(this.y, 8, Math.max(9, H - 8));
+
+    // body follows the head with fixed segment spacing
+    var px = this.x, py = this.y;
+    for (var i = 0; i < this.pts.length; i++) {
+      var p = this.pts[i];
+      var dx = px - p.x, dy = py - p.y;
+      var d = Math.sqrt(dx * dx + dy * dy) || 1;
+      if (d > this.segLen) {
+        p.x += dx * (d - this.segLen) / d;
+        p.y += dy * (d - this.segLen) / d;
+      }
+      px = p.x; py = p.y;
+    }
+  };
+
+  Worm.prototype.draw = function (c, t) {
+    var pop = this.grow * this.grow * (3 - 2 * this.grow);   // smoothstep
+    var alpha = (1 - this.dying) * pop;
+    if (alpha <= 0.01) return;
+    var scale = pop * (1 - this.dying * 0.4);
+
+    var spine = [{ x: this.x, y: this.y }].concat(this.pts);
+    var n = spine.length;
+
+    c.save();
+    c.globalAlpha = alpha;
+
+    // soft shadow under the worm
+    c.save();
+    c.globalAlpha = alpha * 0.3;
+    c.fillStyle = "#000";
+    for (var s = 0; s < n; s += 2) {
+      var tp = 1 - Math.pow(s / n, 1.7);
+      c.beginPath();
+      c.arc(spine[s].x + 2.5, spine[s].y + 4, Math.max(0.5, this.thick * tp * scale), 0, 6.2832);
+      c.fill();
+    }
+    c.restore();
+
+    // body — rendered like tissue on an ultrasound: pale, speckled, dark-edged
+    c.lineJoin = "round";
+    for (var i = n - 1; i >= 0; i--) {
+      var taper = 1 - Math.pow(i / n, 1.7);
+      var r = Math.max(0.6, this.thick * taper * scale);
+      var lit = 62 + 16 * Math.sin(i * 0.9 + t * 5);
+      c.fillStyle = "hsl(210,6%," + lit + "%)";
+      c.beginPath();
+      c.arc(spine[i].x, spine[i].y, r, 0, 6.2832);
+      c.fill();
+      // segment edge
+      c.strokeStyle = "rgba(10,14,20,0.55)";
+      c.lineWidth = Math.max(0.6, r * 0.16);
+      c.stroke();
+
+      // bright echo highlight
+      c.fillStyle = "rgba(248,250,255,0.5)";
+      c.beginPath();
+      c.arc(spine[i].x - r * 0.3, spine[i].y - r * 0.36, Math.max(0.4, r * 0.34), 0, 6.2832);
+      c.fill();
+
+      // tiny leg bristles, like the caterpillar in an ultrasound
+      if (i % 2 === 0 && i < n - 2) {
+        var nx = spine[i].x - spine[i + 1].x, ny = spine[i].y - spine[i + 1].y;
+        var nl = Math.sqrt(nx * nx + ny * ny) || 1;
+        var lx = -ny / nl, ly = nx / nl;
+        c.strokeStyle = "rgba(236,242,250,0.75)";
+        c.lineWidth = Math.max(0.7, r * 0.16);
+        c.lineCap = "round";
+        for (var sgn = -1; sgn <= 1; sgn += 2) {
+          var wob = Math.sin(t * 7 + i * 1.3 + (sgn > 0 ? 0 : 1.6)) * 0.28;
+          c.beginPath();
+          c.moveTo(spine[i].x + lx * r * 0.8 * sgn, spine[i].y + ly * r * 0.8 * sgn);
+          c.lineTo(spine[i].x + (lx * sgn + wob) * r * 1.75, spine[i].y + (ly * sgn + wob) * r * 1.75);
+          c.stroke();
+        }
+      }
+    }
+
+    // head
+    var hx = this.x, hy = this.y, hr = this.thick * scale;
+    var ca = Math.cos(this.dir), sa = Math.sin(this.dir);
+    var perpX = -sa, perpY = ca;
+
+    c.fillStyle = "hsl(210,6%,74%)";
+    c.beginPath(); c.arc(hx, hy, hr * 1.12, 0, 6.2832); c.fill();
+    c.strokeStyle = "rgba(10,14,20,0.55)";
+    c.lineWidth = Math.max(0.7, hr * 0.14); c.stroke();
+
+    // eyes
+    var blink = (Math.sin(t * 1.6 + this.phase) > 0.965) ? 0.18 : 1;
+    for (var e = -1; e <= 1; e += 2) {
+      var ex = hx + ca * hr * 0.42 + perpX * hr * 0.46 * e;
+      var ey = hy + sa * hr * 0.42 + perpY * hr * 0.46 * e;
+      c.fillStyle = "#fdfff4";
+      c.beginPath(); c.ellipse(ex, ey, hr * 0.36, hr * 0.36 * blink, 0, 0, 6.2832); c.fill();
+      if (blink > 0.5) {
+        c.fillStyle = "#141414";
+        c.beginPath(); c.arc(ex + ca * hr * 0.12, ey + sa * hr * 0.12, hr * 0.18, 0, 6.2832); c.fill();
+      }
+    }
+
+    // little grumpy mouth
+    c.strokeStyle = "rgba(20,10,10,.75)";
+    c.lineWidth = Math.max(1, hr * 0.17);
+    c.lineCap = "round";
+    c.beginPath();
+    c.arc(hx + ca * hr * 0.55, hy + sa * hr * 0.55, hr * 0.34, this.dir - 2.5, this.dir - 0.6);
+    c.stroke();
+
+    c.restore();
+  };
+
+  // ------------------------------------------------------------------
+  // particles (sparkles when a worm leaves)
+  // ------------------------------------------------------------------
+  var parts = [];
+  function burst(x, y, color, n) {
+    for (var i = 0; i < (n || 14); i++) {
+      var a = rand(0, 6.2832), sp = rand(50, 220);
+      parts.push({ x: x, y: y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 40, life: 1, col: color, r: rand(2, 5) });
+    }
+  }
+  function updateParts(dt) {
+    for (var i = parts.length - 1; i >= 0; i--) {
+      var p = parts[i];
+      p.life -= dt * 1.5;
+      p.vy += 380 * dt;
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      if (p.life <= 0) parts.splice(i, 1);
+    }
+  }
+  function drawParts(c) {
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      c.globalAlpha = clamp(p.life, 0, 1);
+      c.fillStyle = p.col;
+      c.beginPath(); c.arc(p.x, p.y, p.r, 0, 6.2832); c.fill();
+    }
+    c.globalAlpha = 1;
+  }
+
+  // ------------------------------------------------------------------
+  // game state
+  // ------------------------------------------------------------------
+  var MODE = "idle";        // idle | scanning | play | win
+  var worms = [];
+  var scanT = 0;
+  var REVEAL_DELAY = 1.6;      // how long before the SEE INSIDE button appears
+  var scanMsgIdx = -1, shakeUntil = 0;
+  var SCAN_LINES = [
+    "SCANNING… move slowly over the belly",
+    "Analysing tummy contents… 🔬",
+    "Hmm. Something is moving in there…",
+    "Warming up the X-ray beam…",
+    "Detecting wrigglers… hold still!",
+    "Almost got a clear picture…"
+  ];
+  var lastTime = 0, running = false;
+  var perfAcc = 0, perfN = 0;
+
+  // ---- the day's diet, ticked off by a grown-up before the scan ----
+  var FOODS = [
+    { e: "🥦", n: "veggies", junk: false },
+    { e: "🍎", n: "fruit",   junk: false },
+    { e: "💧", n: "water",   junk: false },
+    { e: "🥕", n: "carrots", junk: false },
+    { e: "🍓", n: "berries", junk: false },
+    { e: "🍚", n: "proper meal", junk: false },
+    { e: "🥤", n: "cola",    junk: true },
+    { e: "🍟", n: "chips",   junk: true },
+    { e: "🍬", n: "candy",   junk: true },
+    { e: "🍩", n: "donut",   junk: true },
+    { e: "🍔", n: "burger",  junk: true },
+    { e: "🍦", n: "ice cream", junk: true }
+  ];
+  var eaten = [];   // the FOODS entries that were ticked
+
+  function junkEaten() { return eaten.filter(function (f) { return f.junk; }); }
+  function goodEaten() { return eaten.filter(function (f) { return !f.junk; }); }
+
+  // 1 or 2 worms, never more — a wall of worms is scary, not instructive
+  function wormTarget() {
+    var j = junkEaten().length;
+    if (j === 0) return 0;
+    return j >= 3 ? 2 : 1;
+  }
+
+  function listNames(arr) {
+    var n = arr.map(function (f) { return f.n; });
+    if (n.length === 0) return "";
+    if (n.length === 1) return n[0];
+    return n.slice(0, -1).join(", ") + " and " + n[n.length - 1];
+  }
+
+  var FACTS = [
+    "Sugary drinks feed the unhelpful bugs in your tummy. Water and fruit feed the good ones instead.",
+    "Your tummy has billions of tiny helpers living in it. Veggies feed the helpers — sugar feeds the troublemakers.",
+    "One glass of cola has roughly 9 spoonfuls of sugar in it. Your tummy notices.",
+    "Crunchy fruit and vegetables work a bit like a broom for your insides."
+  ];
+
+  function setStatus(text, kind) {
+    var el = $("status");
+    el.textContent = text;
+    el.className = kind || "";
+  }
+
+  function updateCount() {
+    var alive = worms.filter(function (w) { return !w.dying; }).length;
+    $("countnum").textContent = alive;
+    return alive;
+  }
+
+  function flash(color) {
+    var f = $("flash");
+    f.style.background = color;
+    f.style.opacity = "0.42";
+    setTimeout(function () { f.style.opacity = "0"; }, 130);
+  }
+
+  // ---- the "what did you eat today?" checklist ----
+  function buildDiet() {
+    var box = $("dietFoods");
+    box.innerHTML = "";
+    eaten = [];
+    FOODS.forEach(function (f) {
+      var b = document.createElement("button");
+      b.className = "food";
+      b.innerHTML = '<span class="emoji">' + f.e + '</span><span class="name">' + f.n + '</span>';
+      b.addEventListener("click", function () {
+        var i = eaten.indexOf(f);
+        if (i >= 0) { eaten.splice(i, 1); b.classList.remove("on"); }
+        else { eaten.push(f); b.classList.add("on"); }
+        buzz(15);
+        updateTally();
+      });
+      box.appendChild(b);
+    });
+    updateTally();
+  }
+
+  function updateTally() {
+    var el = $("dietTally");
+    if (!eaten.length) { el.textContent = "Nothing ticked yet."; return; }
+    var j = junkEaten().length;
+    el.textContent = eaten.length + " ticked" + (j ? " · " + j + " sugary/greasy" : " · all good stuff ✅");
+  }
+
+  // ---- the verdict, shown after the reveal ----
+  function showResult() {
+    MODE = "result";
+    stopNoise();
+    setTorch(false);
+    $("hud").classList.add("hidden");
+    var n = worms.length, j = junkEaten(), g = goodEaten();
+    var r = $("result");
+
+    if (n === 0) {
+      r.classList.add("clean");
+      $("resultEmoji").textContent = "✨";
+      $("resultTitle").textContent = "TUMMY IS CLEAR!";
+      $("resultBody").innerHTML =
+        "Nothing wriggling in there today." +
+        (g.length ? "<br><br>You had <b>" + listNames(g) + "</b> — that's the kind of food your tummy helpers like." : "") +
+        "<br><br>" + pick(FACTS);
+    } else {
+      r.classList.remove("clean");
+      $("resultEmoji").textContent = "🪱";
+      $("resultTitle").textContent = n === 1 ? "ONE WRIGGLER" : "TWO WRIGGLERS";
+      $("resultBody").innerHTML =
+        "Today you had <b>" + listNames(j) + "</b>. That's exactly what the wrigglers like to eat." +
+        (g.length ? "<br><br>The <b>" + listNames(g) + "</b> helped though — that's why there aren't more." : "") +
+        "<br><br>Swap one sugary thing for water or fruit tomorrow and scan again. Let's see if they leave." +
+        "<br><br>" + pick(FACTS);
+    }
+    r.classList.remove("hidden");
+    buzz(60);
+  }
+
+  // ==================================================================
+  // ULTRASOUND RENDERER
+  // greyscale camera feed inside a sector "cone", speckle grain,
+  // depth ruler and fake machine readouts down the side.
+  // ==================================================================
+  var noiseTile = null, noisePat = null;
+
+  function makeNoise() {
+    try {
+      var n = document.createElement("canvas");
+      n.width = n.height = 96;
+      var nc = n.getContext("2d");
+      var id = nc.createImageData(96, 96);
+      for (var i = 0; i < id.data.length; i += 4) {
+        var v = Math.random() * 255;
+        id.data[i] = id.data[i + 1] = id.data[i + 2] = v;
+        id.data[i + 3] = 46;
+      }
+      nc.putImageData(id, 0, 0);
+      noiseTile = n;
+    } catch (e) { noiseTile = null; }
+  }
+
+  // Builds the fan/sector shape. addRect=true makes an even-odd "everything
+  // outside the fan" path so we can black out the corners.
+  function conePath(c, w, h, addRect) {
+    var k = coneParams(w, h);
+    var ax = k.ax, ay = k.ay, a0 = k.a0, a1 = k.a1, rIn = k.rIn, rOut = k.rOut;
+    c.beginPath();
+    if (addRect) c.rect(0, 0, w, h);
+    c.moveTo(ax + Math.cos(a0) * rIn, ay + Math.sin(a0) * rIn);
+    c.arc(ax, ay, rIn, a0, a1);
+    c.arc(ax, ay, rOut, a1, a0, true);
+    c.closePath();
+    return { ax: ax, ay: ay, a0: a0, a1: a1, rIn: rIn, rOut: rOut };
+  }
+
+  // greyscale camera frame, cover-fitted
+  function drawFeed(c, w, h) {
+    c.save();
+    c.fillStyle = "#04060a";
+    c.fillRect(0, 0, w, h);
+    try {
+      // extra zoom leaves room to pan the image as the phone tilts.
+      // canvas blur is the most expensive bit, so it's dropped on slow phones
+      // and only used at all when the probe is actually moving.
+      var base = "grayscale(1) contrast(1.5) brightness(0.82)";
+      var blur = lowQ ? 0 : 0.4 + motionMag * 1.6;
+      c.filter = blur > 0.05 ? base + " blur(" + blur.toFixed(2) + "px)" : base;
+      if (isFrozen && frozenFrame) drawCover(c, frozenFrame, frozenFrame.width, frozenFrame.height, w, h, panX, panY, 1.2);
+      else if (video.videoWidth) drawCover(c, video, video.videoWidth, video.videoHeight, w, h, panX, panY, 1.2);
+      c.filter = "none";
+    } catch (e) { c.filter = "none"; }
+    c.restore();
+  }
+
+  function drawSpeckle(c, w, h, t) {
+    if (!noiseTile) makeNoise();
+    if (noiseTile && !noisePat) { try { noisePat = c.createPattern(noiseTile, "repeat"); } catch (e) { noisePat = null; } }
+    if (!noisePat) { drawDepthFalloff(c, w, h); return; }
+    c.save();
+    conePath(c, w, h, false); c.clip();
+    c.globalCompositeOperation = "overlay";
+    c.globalAlpha = 0.75;
+    c.translate(-(t * 37 % 96), -(t * 53 % 96));
+    c.fillStyle = noisePat;
+    c.fillRect(0, 0, w + 96, h + 96);
+    c.restore();
+    drawDepthFalloff(c, w, h);
+  }
+
+  // real ultrasounds get murky the deeper they go
+  function drawDepthFalloff(c, w, h) {
+    c.save();
+    conePath(c, w, h, false); c.clip();
+    var g = c.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(0.7, "rgba(0,0,0,0.10)");
+    g.addColorStop(1, "rgba(0,0,0,0.36)");
+    c.fillStyle = g; c.fillRect(0, 0, w, h);
+    c.restore();
+  }
+
+  function drawConeFrame(c, w, h) {
+    // black out everything outside the fan
+    conePath(c, w, h, true);
+    c.fillStyle = "#04060a";
+    c.fill("evenodd");
+    // fan outline
+    var k = conePath(c, w, h, false);
+    c.strokeStyle = "rgba(190,215,255,0.22)";
+    c.lineWidth = 2;
+    c.stroke();
+    return k;
+  }
+
+  function drawChrome(c, w, h, t) {
+    c.save();
+    c.font = "600 11px ui-monospace, Menlo, Consolas, monospace";
+    c.textBaseline = "top";
+    c.fillStyle = "rgba(215,230,255,0.72)";
+    c.fillText("TUMMY-3000   C5-2 ABDOMEN", 12, 10);
+
+    var deg = Math.round(tilt.x * 40);
+    var lines = [
+      "Gain  42",
+      "Depth 12.5cm",
+      "Frq   3.5MHz",
+      "Probe " + (deg > 0 ? "+" : "") + deg + "°",
+      motionMag > 0.18 ? "** MOVING **" : "TIS   0.3"
+    ];
+    c.textAlign = "right";
+    for (var i = 0; i < lines.length; i++) c.fillText(lines[i], w - 12, 10 + i * 15);
+    c.textAlign = "left";
+
+    // depth ruler down the left edge
+    c.strokeStyle = "rgba(215,230,255,0.5)";
+    c.fillStyle = "rgba(215,230,255,0.6)";
+    c.lineWidth = 1;
+    c.font = "600 9px ui-monospace, Menlo, Consolas, monospace";
+    var top = h * 0.14, bot = h * 0.94;
+    c.beginPath(); c.moveTo(16, top); c.lineTo(16, bot); c.stroke();
+    for (var d = 0; d <= 10; d++) {
+      var yy = top + (bot - top) * (d / 10);
+      var major = d % 2 === 0;
+      c.beginPath(); c.moveTo(16, yy); c.lineTo(16 + (major ? 9 : 5), yy); c.stroke();
+      if (major && d > 0) c.fillText(String(d), 28, yy - 4);
+    }
+
+    // blinking live indicator
+    if (Math.sin(t * 4) > 0) {
+      c.fillStyle = "rgba(120,255,170,0.9)";
+      c.beginPath(); c.arc(w - 16, h - 16, 4.5, 0, 6.2832); c.fill();
+    }
+    c.restore();
+  }
+
+  // sweeping beam that runs across the fan while scanning
+  function drawBeam(c, w, h, t) {
+    var k = conePath(c, w, h, false);
+    c.save();
+    c.clip();
+    var span = k.a1 - k.a0;
+    var a = k.a0 + (Math.sin(t * 1.15) * 0.5 + 0.5) * span;
+    c.globalCompositeOperation = "lighter";
+    for (var i = 0; i < 8; i++) {
+      var off = i * 0.028;
+      c.globalAlpha = 0.16 * (1 - i / 8);
+      c.beginPath();
+      c.moveTo(k.ax, k.ay);
+      c.arc(k.ax, k.ay, k.rOut, a - off - 0.03, a - off + 0.03);
+      c.closePath();
+      c.fillStyle = "#bfe4ff";
+      c.fill();
+    }
+    c.globalAlpha = 0.85;
+    c.strokeStyle = "rgba(225,242,255,0.9)";
+    c.lineWidth = 2;
+    c.beginPath();
+    c.moveTo(k.ax + Math.cos(a) * k.rIn, k.ay + Math.sin(a) * k.rIn);
+    c.lineTo(k.ax + Math.cos(a) * k.rOut, k.ay + Math.sin(a) * k.rOut);
+    c.stroke();
+    c.restore();
+  }
+
+  // full ultrasound frame. worms are clipped inside the fan so they
+  // always look like they're actually in there.
+  function renderScan(c, w, h, t, opts) {
+    drawFeed(c, w, h);
+    if (opts.worms && worms.length) {
+      c.save();
+      conePath(c, w, h, false); c.clip();
+      // worms slide with the tissue, slightly less than the surface — reads as depth
+      c.translate(panX * 0.82, panY * 0.82);
+      for (var i = worms.length - 1; i >= 0; i--) worms[i].draw(c, t);
+      c.restore();
+    }
+    // speckle goes on LAST so the worms pick up the same grain as the tissue
+    drawSpeckle(c, w, h, t);
+    if (opts.beam) drawBeam(c, w, h, t);
+    drawConeFrame(c, w, h);
+    drawChrome(c, w, h, t);
+  }
+
+  // ------------------------------------------------------------------
+  // main loop
+  // ------------------------------------------------------------------
+  function loop(now) {
+    if (!running) return;
+    requestAnimationFrame(loop);
+    var t = now / 1000;
+    var dt = Math.min(0.05, lastTime ? t - lastTime : 0.016);
+    lastTime = t;
+
+    // watch the frame rate; if a cheap phone is struggling, shed quality once
+    if (!lowQ) {
+      perfAcc += dt; perfN++;
+      if (perfN >= 60) {
+        if (perfN / perfAcc < 26) { lowQ = true; maxDPR = 1; resize(); }
+        perfAcc = 0; perfN = 0;
+      }
+    }
+
+    updateMotion(dt);
+    ctx.clearRect(0, 0, W, H);
+
+    if (MODE === "scanning") {
+      scanT += dt;
+      renderScan(ctx, W, H, t, { beam: true, worms: false });
+      // keeps scanning forever — you tap SEE INSIDE when you're ready
+      if (motionMag > 0.42 && t > shakeUntil && MODE === "scanning") {
+        shakeUntil = t + 1.8; scanMsgIdx = -1;
+        setStatus("Whoa — hold the probe steadier! 🤚");
+      }
+      if (t > shakeUntil) {
+        var idx = Math.floor(scanT / 2.6) % SCAN_LINES.length;
+        if (idx !== scanMsgIdx) { scanMsgIdx = idx; setStatus(SCAN_LINES[idx]); }
+      }
+      if (scanT > REVEAL_DELAY && $("revealWrap").classList.contains("hidden")) {
+        $("revealWrap").classList.remove("hidden");
+      }
+    } else if (MODE === "play" || MODE === "result") {
+      for (var i = worms.length - 1; i >= 0; i--) {
+        worms[i].update(dt, t);
+        if (worms[i].dead) worms.splice(i, 1);
+      }
+      renderScan(ctx, W, H, t, { beam: false, worms: true });
+      updateCount();
+    }
+
+    updateParts(dt);
+    drawParts(ctx);
+  }
+
+  function beginPlay() {
+    if (MODE !== "scanning") return;
+    MODE = "play";
+    $("revealWrap").classList.add("hidden");
+    worms = [];
+    var n = wormTarget();
+    for (var i = 0; i < n; i++) worms.push(new Worm());
+    buzz(n ? [80, 50, 80] : 40);
+    if (n === 0) setStatus("Nothing wriggling in there. Nice work ✨", "good");
+    else setStatus(n === 1 ? "Uh oh — there's one in there 🪱" : "Uh oh — two of them in there 🪱", "bad");
+    updateCount();
+    // auto-keep the reveal so the other kid can see this exact scan later
+    setTimeout(function () { if (MODE === "play") saveScan(); }, 1300);
+    setTimeout(function () {
+      if (MODE === "play") $("doneWrap").classList.remove("hidden");
+    }, 2600);
+  }
+
+  // ------------------------------------------------------------------
+  // flow control
+  // ------------------------------------------------------------------
+  function showError(msg) {
+    var e = $("err");
+    e.classList.remove("hidden");
+    e.innerHTML = msg;
+    $("diet").classList.add("hidden");
+    $("start").classList.remove("hidden");
+  }
+
+  // step 1 — the grown-up ticks off what was eaten today
+  function openDiet() {
+    $("err").classList.add("hidden");
+    buildDiet();
+    $("start").classList.add("hidden");
+    $("result").classList.add("hidden");
+    $("gallery").classList.add("hidden");
+    $("viewer").classList.add("hidden");
+    $("diet").classList.remove("hidden");
+  }
+
+  // step 2 — the scan itself
+  function begin() {
+    audio();
+    enableMotion();
+    $("err").classList.add("hidden");
+    startCamera().then(function () {
+      resize();
+      $("diet").classList.add("hidden");
+      $("start").classList.add("hidden");
+      $("result").classList.add("hidden");
+      $("gallery").classList.add("hidden");
+      $("viewer").classList.add("hidden");
+      $("doneWrap").classList.add("hidden");
+      $("revealWrap").classList.add("hidden");
+      $("hud").classList.remove("hidden");
+      isFrozen = false; frozenFrame = null;
+      $("freezeTxt").textContent = "Hold";
+      $("freezeBtn").firstChild.nodeValue = "❄️ ";
+      $("freezeBtn").style.borderColor = "rgba(160,195,240,.34)";
+      MODE = "scanning"; scanT = 0; worms = []; parts = [];
+      scanMsgIdx = -1; noisePat = null;
+      updateCount();
+      setStatus(SCAN_LINES[0]);
+      setTorch(true);
+      startNoise();
+      keepAwake(true);
+      buzz(50);
+      if (!running) { running = true; lastTime = 0; requestAnimationFrame(loop); }
+      if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(function () {});
+      }
+    }).catch(function (err) {
+      var name = err && err.name ? err.name : String(err);
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        showError("📷 The camera was blocked.<br>Tap the 🔒 in the address bar → Permissions → allow Camera, then try again.");
+      } else if (name === "NO_API" || location.protocol === "file:") {
+        showError("📷 Phone browsers only allow the camera on a secure page.<br>Open this file from an <code>https://</code> address or <code>localhost</code> — not by tapping the file directly.");
+      } else if (name === "NotFoundError") {
+        showError("📷 No camera found on this device.");
+      } else {
+        showError("📷 Couldn't start the camera (" + name + ").");
+      }
+    });
+  }
+
+  function quit() {
+    MODE = "idle"; running = false; worms = []; parts = [];
+    isFrozen = false; frozenFrame = null;
+    ctx.clearRect(0, 0, W, H);
+    stopNoise();
+    keepAwake(false);
+    stopCamera();
+    updateGalCount();
+    $("hud").classList.add("hidden");
+    $("result").classList.add("hidden");
+    $("diet").classList.add("hidden");
+    $("gallery").classList.add("hidden");
+    $("viewer").classList.add("hidden");
+    $("doneWrap").classList.add("hidden");
+    $("start").classList.remove("hidden");
+    if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(function () {});
+  }
+
+  // ------------------------------------------------------------------
+  // wiring
+  // ------------------------------------------------------------------
+  $("go").addEventListener("click", openDiet);
+  $("again").addEventListener("click", openDiet);
+  $("toScan").addEventListener("click", begin);
+  $("doneBtn").addEventListener("click", showResult);
+  $("stopBtn").addEventListener("click", quit);
+  $("freezeBtn").addEventListener("click", function () {
+    if (MODE !== "play" && MODE !== "result") return;
+    setFrozen(!isFrozen);
+  });
+  $("saveBtn").addEventListener("click", saveScan);
+  $("revealBtn").addEventListener("click", beginPlay);
+  $("openGallery").addEventListener("click", function () {
+    renderGallery();
+    $("start").classList.add("hidden");
+    $("gallery").classList.remove("hidden");
+  });
+  $("galBack").addEventListener("click", function () {
+    $("gallery").classList.add("hidden");
+    $("start").classList.remove("hidden");
+  });
+  $("viewerBack").addEventListener("click", function () {
+    $("viewer").classList.add("hidden");
+  });
+  $("torchBtn").addEventListener("click", function () {
+    if (!torchSupported) {
+      setStatus("This phone won't let the page control the flashlight 😕");
+      return;
+    }
+    setTorch(!torchOn);
+  });
+
+  // tapping a worm pokes it (fun, doesn't remove it — food does that)
+  canvas.addEventListener("pointerdown", function (ev) {
+    if (MODE !== "play") return;
+    var r = canvas.getBoundingClientRect();
+    // undo the motion parallax so taps land on where the worm actually looks
+    var x = ev.clientX - r.left - panX * 0.82, y = ev.clientY - r.top - panY * 0.82;
+    for (var i = 0; i < worms.length; i++) {
+      var w = worms[i];
+      if (Math.hypot(w.x - x, w.y - y) < w.thick * 3.2 && !w.dying) {
+        w.dir += rand(2, 4);
+        w.speed = Math.min(90, w.speed * 1.6);
+        burst(w.x, w.y, "#dfe9f5", 6);
+        setStatus("It wriggled! Poking won't move it — food will 🍎");
+        buzz(20);
+        return;
+      }
+    }
+  });
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) {
+      if (torchOn) setTorch(false);
+      stopNoise();
+      keepAwake(false);
+    } else if (MODE === "scanning" || MODE === "play") {
+      keepAwake(true);
+      if (MODE === "scanning") startNoise();
+    }
+  });
+
+  resize();
+  updateGalCount();
+})();
+</script>
+</body>
+</html>
