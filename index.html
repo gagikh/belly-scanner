@@ -165,6 +165,30 @@
     border-radius: 20px; padding: 16px 18px; max-width: 30ch;
     font-size: clamp(14px, 4.1vw, 17px); line-height: 1.5;
   }
+  /* ---------- DEBUG / TUNING PANEL (long-press the 🪱 chip) ---------- */
+  #debug {
+    position: absolute; left: 8px; top: calc(64px + env(safe-area-inset-top));
+    width: min(230px, 62vw); z-index: 30; pointer-events: auto;
+    background: rgba(4, 8, 14, .88); border: 1px solid rgba(160,195,240,.4);
+    border-radius: 12px; padding: 9px 10px;
+    font: 11px/1.45 ui-monospace, Menlo, Consolas, monospace;
+    color: #cfe2ff; max-height: 66vh; overflow-y: auto;
+    backdrop-filter: blur(6px);
+  }
+  #debug b { color: #9fe8c0; }
+  #dbgHead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  #dbgClose { padding: 0 6px; color: #ffb9a8; font-size: 14px; }
+  #dbgStats { white-space: pre; margin-bottom: 8px; color: #b8cbe6; }
+  .trow { margin: 7px 0; }
+  .trow .lab { display: flex; justify-content: space-between; }
+  .trow input[type=range] { width: 100%; margin: 2px 0 0; height: 20px; accent-color: #7dffb0; }
+  #debug button {
+    font: inherit; color: #cfe2ff; background: rgba(255,255,255,.1);
+    border: 1px solid rgba(160,195,240,.35); border-radius: 7px;
+    padding: 5px 9px; margin: 4px 4px 0 0;
+  }
+  #dbgOut { margin-top: 6px; color: #9fe8c0; word-break: break-all; white-space: normal; }
+
   #err { color: #ffd9d0; font-size: 15px; line-height: 1.5; max-width: 32ch; }
   code { background: rgba(255,255,255,.12); padding: 1px 6px; border-radius: 6px; font-size: .92em; }
 
@@ -203,6 +227,19 @@
   <video id="cam" playsinline muted autoplay></video>
   <canvas id="fx"></canvas>
   <div id="flash"></div>
+
+  <!-- Tuning panel. Hidden; long-press the worm-count chip for ~0.8s. -->
+  <div id="debug" class="hidden">
+    <div id="dbgHead"><b>CV TUNING</b><span id="dbgClose">✕</span></div>
+    <div id="dbgStats">–</div>
+    <div id="dbgTune"></div>
+    <label class="trow" style="display:flex; gap:6px; align-items:center;">
+      <input type="checkbox" id="dbgMask"> show mask + window
+    </label>
+    <button id="dbgReset">defaults</button>
+    <button id="dbgCopy">copy values</button>
+    <div id="dbgOut"></div>
+  </div>
 
   <!-- HUD -->
   <div id="hud" class="hidden">
@@ -289,6 +326,43 @@
   var randInt = function (a, b) { return Math.floor(rand(a, b + 1)); };
   var pick = function (arr) { return arr[Math.floor(Math.random() * arr.length)]; };
   var clamp = function (v, a, b) { return v < a ? a : v > b ? b : v; };
+
+  // ------------------------------------------------------------------
+  // TUNING
+  // Every threshold the computer-vision code depends on lives here, so it can
+  // be adjusted on a real phone against a real tummy instead of guessed at.
+  // Long-press the worm-count chip to open the panel.
+  // ------------------------------------------------------------------
+  var TUNE_DEFAULTS = {
+    navelScore: -5,    // navel accepted when its centre-surround score is below this
+    maskK: 0.2,        // body threshold = -maskK x std-dev of brightness
+    flowConf: 0.05,    // reject a motion estimate below this confidence
+    flowTex: 5,        // reject it if the patch has less texture than this
+    showMask: 0
+  };
+  var TUNE_SPEC = [
+    { k: "navelScore", label: "navel ≤", min: -25, max: -0.5, step: 0.5 },
+    { k: "maskK",      label: "mask k",      min: 0,   max: 1.2,  step: 0.05 },
+    { k: "flowConf",   label: "conf ≥", min: 0,   max: 0.4,  step: 0.01 },
+    { k: "flowTex",    label: "tex ≥",  min: 0,   max: 30,   step: 1 }
+  ];
+  var TUNE_KEY = "bellyTune.v1";
+  var TUNE = {};
+
+  function loadTune() {
+    for (var k in TUNE_DEFAULTS) TUNE[k] = TUNE_DEFAULTS[k];
+    try {
+      var saved = JSON.parse(localStorage.getItem(TUNE_KEY) || "{}");
+      for (var j in saved) if (j in TUNE_DEFAULTS && isFinite(saved[j])) TUNE[j] = saved[j];
+    } catch (e) {}
+  }
+  function saveTune() {
+    try { localStorage.setItem(TUNE_KEY, JSON.stringify(TUNE)); } catch (e) {}
+  }
+  loadTune();
+
+  // live readings, for the panel
+  var dbg = { navelScore: 0, maskFrac: 0, fps: 0, dx: 0, dy: 0 };
 
   var video = $("cam"), canvas = $("fx"), ctx = canvas.getContext("2d");
   var W = 0, H = 0, DPR = 1;
@@ -586,6 +660,9 @@
   var integ = null;
   var navel = null;        // smoothed {x,y} in thumbnail coords
   var navelMiss = 0, navelAnnounced = false;
+  // Auto-detection needs a shadowed navel to find. On a small child there often
+  // isn't one, so the parent can just tap it instead — that always wins.
+  var navelManual = null;  // {x,y} normalised 0..1, or null for auto
 
   function buildIntegral() {
     var IW = TW + 1;
@@ -639,7 +716,7 @@
     var s2 = 0;
     for (i = 0; i < n; i++) s2 += trkCur[i] * trkCur[i];
     var sd = Math.sqrt(s2 / n) || 1;
-    var thr = -0.2 * sd;            // trkCur is zero-mean, so 0 is average brightness
+    var thr = -TUNE.maskK * sd;     // trkCur is zero-mean, so 0 is average brightness
 
     for (i = 0; i < n; i++) mask[i] = trkCur[i] > thr ? 1 : 0;
     despeckle();
@@ -675,6 +752,7 @@
 
     // if it covers almost nothing or almost everything, it isn't telling us anything
     var frac = kept / n;
+    dbg.maskFrac = frac;
     maskValid = frac > 0.12 && frac < 0.96;
   }
 
@@ -709,13 +787,16 @@
           if (x - R < 0 || x + R + 1 > TW) continue;
           var iS = boxSum(x - r, y - r, x + r + 1, y + r + 1);
           var oS = boxSum(x - R, y - R, x + R + 1, y + R + 1);
-          if (!onBodyT(x, y)) continue;                      // a dark patch off-body isn't a navel
-          var score = (iS / iN) - ((oS - iS) / (oN - iN));   // negative = darker than surroundings
+          // Prefer candidates on the body, but don't let the mask veto them.
+          // If the mask is wrong, a strong navel should still be able to win.
+          var penalty = onBodyT(x, y) ? 0 : 3;
+          var score = (iS / iN) - ((oS - iS) / (oN - iN)) + penalty;   // negative = darker than surroundings
           if (!best || score < best.score) best = { x: x, y: y, score: score };
         }
       }
     }
-    if (!best || best.score > -5) return null;   // nothing convincingly blob-like
+    dbg.navelScore = best ? best.score : 0;
+    if (!best || best.score > TUNE.navelScore) return null;   // nothing convincingly blob-like
     return best;
   }
 
@@ -723,6 +804,16 @@
   function updateNavel() {
     if (!trackerGrab()) return;
     buildBodyMask();
+
+    // A hand-placed navel is held exactly where it was put. Stored normalised
+    // so it survives the thumbnail being resized.
+    if (navelManual) {
+      navel = { x: navelManual.x * TW, y: navelManual.y * TH };
+      trkPrev.set(trkCur);
+      trkHasPrev = true;
+      return;
+    }
+
     var hit = detectNavel();
     trkPrev.set(trkCur);
     trkHasPrev = true;
@@ -733,6 +824,15 @@
     } else if (navel && ++navelMiss > 12) {
       navel = null;
     }
+  }
+
+  // put the navel where the grown-up tapped
+  function setNavelManual(sx, sy) {
+    if (!W || !H) return;
+    navelManual = { x: clamp(sx / W, 0, 1), y: clamp(sy / H, 0, 1) };
+    navel = { x: navelManual.x * TW, y: navelManual.y * TH };
+    navelMiss = 0;
+    applyFocus(navelManual.x, navelManual.y);
   }
 
   function navelScreen() {
@@ -794,8 +894,9 @@
 
     trkPrev.set(trkCur);
 
+    dbg.dx = dx; dbg.dy = dy;
     // a blank, textureless view gives a meaningless "match" — ignore it
-    if (flowTex < 5 || flowConf < 0.05) return null;
+    if (flowTex < TUNE.flowTex || flowConf < TUNE.flowConf) return null;
     return { x: dx, y: dy };
   }
 
@@ -874,6 +975,8 @@
       // where the locked-on spot currently sits, in thumbnail coordinates
       var asx = anchorW.x - camX, asy = anchorW.y - camY;
       var f = trackerEstimate(asx / (W || 1) * TW, asy / (H || 1) * TH);
+      // keep the mask fresh while the debug view is up
+      if (TUNE.showMask) buildBodyMask();
       if (f) {
         camTX -= f.x * (W / TW);
         camTY -= f.y * (H / TH);
@@ -1276,7 +1379,7 @@
   var worms = [];
   var scanT = 0;
   var REVEAL_DELAY = 1.6;      // how long before the SEE INSIDE button appears
-  var scanMsgIdx = -1, shakeUntil = 0;
+  var scanMsgIdx = -1, shakeUntil = 0, navelHintUntil = 0;
   var SCAN_LINES = [
     "SCANNING… move slowly over the belly",
     "Analysing tummy contents… 🔬",
@@ -1541,9 +1644,9 @@
     // what the vision side is doing, so a weak lock is visible rather than baffling
     if (MODE === "scanning") {
       c.fillStyle = navel ? "rgba(150,225,180,0.85)" : "rgba(215,230,255,0.5)";
-      c.fillText(navel ? "NAVEL LOCK" : "SEEKING…", 128, fy);
+      c.fillText(navelManual ? "NAVEL SET" : (navel ? "NAVEL LOCK" : "SEEKING… (tap it)"), 128, fy);
     } else if (MODE === "play") {
-      var locked = flowConf > 0.12 && flowTex >= 5;
+      var locked = flowConf >= TUNE.flowConf * 2 && flowTex >= TUNE.flowTex;
       c.fillStyle = locked ? "rgba(150,225,180,0.8)" : "rgba(255,200,120,0.85)";
       c.fillText(locked ? "TRK LOCK" : "TRK WEAK", 128, fy);
     }
@@ -1631,16 +1734,45 @@
     c.restore();
   }
 
+  // Debug view: paints the body mask and the match window straight onto the
+  // screen, so you can see exactly what the vision code is working from.
+  function drawMaskDebug(c, w, h) {
+    if (!mask || !TUNE.showMask) return;
+    var kx = w / TW, ky = h / TH;
+    c.save();
+    c.globalAlpha = 0.3;
+    c.fillStyle = "#39d98a";
+    for (var y = 0; y < TH; y++) {
+      for (var x = 0; x < TW; x++) {
+        if (mask[y * TW + x] === 1) c.fillRect(x * kx, y * ky, kx, ky);
+      }
+    }
+    c.globalAlpha = 1;
+    // the SAD match window
+    c.strokeStyle = "#ffd166";
+    c.lineWidth = 2;
+    c.strokeRect(regX0 * kx, regY0 * ky, (regX1 - regX0) * kx, (regY1 - regY0) * ky);
+    // the anchor we're holding onto
+    var ax = anchorW.x - camX, ay = anchorW.y - camY;
+    c.strokeStyle = "#ff6b6b";
+    c.beginPath();
+    c.moveTo(ax - 12, ay); c.lineTo(ax + 12, ay);
+    c.moveTo(ax, ay - 12); c.lineTo(ax, ay + 12);
+    c.stroke();
+    c.restore();
+  }
+
   // Target marker over the belly button.
   function drawNavelMark(c, w, h, t) {
     var ns = navelScreen();
     if (!ns) return;
+    var manual = !!navelManual;
     c.save();
     c.translate(ns.x, ns.y);
-    c.strokeStyle = "rgba(165,235,255,0.9)";
-    c.lineWidth = 2;
-    c.setLineDash([5, 6]);
-    c.lineDashOffset = -t * 16;
+    // hand-placed reads as a steady solid ring; auto keeps hunting with a dashed one
+    c.strokeStyle = manual ? "rgba(150,255,190,0.95)" : "rgba(165,235,255,0.9)";
+    c.lineWidth = manual ? 2.5 : 2;
+    if (!manual) { c.setLineDash([5, 6]); c.lineDashOffset = -t * 16; }
     c.beginPath(); c.arc(0, 0, 27, 0, 6.2832); c.stroke();
     c.setLineDash([]);
     c.beginPath();
@@ -1650,10 +1782,10 @@
       c.lineTo(Math.cos(a) * 22, Math.sin(a) * 22);
     }
     c.stroke();
-    c.fillStyle = "rgba(165,235,255,0.95)";
+    c.fillStyle = manual ? "rgba(150,255,190,0.95)" : "rgba(165,235,255,0.95)";
     c.font = "600 10px ui-monospace, Menlo, Consolas, monospace";
     c.textAlign = "center";
-    c.fillText("NAVEL", 0, 42);
+    c.fillText(manual ? "NAVEL · SET" : "NAVEL", 0, 42);
     c.textAlign = "left";
     c.restore();
   }
@@ -1677,6 +1809,7 @@
       drawBodyEdges(c, w, h);
       drawNavelMark(c, w, h, t);
     }
+    if (TUNE.showMask) { drawMaskDebug(c, w, h); if (!opts.beam) drawNavelMark(c, w, h, t); }
     drawConeFrame(c, w, h);
     drawChrome(c, w, h, t);
   }
@@ -1692,12 +1825,12 @@
     lastTime = t;
 
     // watch the frame rate; if a cheap phone is struggling, shed quality once
-    if (!lowQ) {
-      perfAcc += dt; perfN++;
-      if (perfN >= 60) {
-        if (perfN / perfAcc < 26) { lowQ = true; maxDPR = 1; resize(); }
-        perfAcc = 0; perfN = 0;
-      }
+    perfAcc += dt; perfN++;
+    if (perfN >= 30) {
+      dbg.fps = perfN / perfAcc;
+      if (!lowQ && dbg.fps < 26) { lowQ = true; maxDPR = 1; resize(); }
+      perfAcc = 0; perfN = 0;
+      refreshTuneStats();
     }
 
     updateMotion(dt);
@@ -1707,6 +1840,12 @@
       scanT += dt;
       renderScan(ctx, W, H, t, { beam: true, worms: false });
       // keeps scanning forever — you tap SEE INSIDE when you're ready
+      // auto-detection can't find a navel on a small, smooth tummy — offer the tap
+      if (!navel && !navelManual && scanT > 6 && t > navelHintUntil) {
+        navelHintUntil = t + 11;
+        shakeUntil = t + 4;
+        setStatus("Can't spot the belly button — tap where it is 👆");
+      }
       if (motionMag > 0.42 && t > shakeUntil && MODE === "scanning") {
         shakeUntil = t + 1.8; scanMsgIdx = -1;
         setStatus("Whoa — hold the probe steadier! 🤚");
@@ -1795,6 +1934,7 @@
       MODE = "scanning"; scanT = 0; worms = []; parts = [];
       scanMsgIdx = -1; noisePat = null;
       oriRef = null; navel = null; navelMiss = 0; navelAnnounced = false;
+      navelManual = null; navelHintUntil = 0; shakeUntil = 0;
       maskValid = false; trkTick = 0;
       trackerInit();
       updateCount();
@@ -1841,6 +1981,96 @@
   }
 
   // ------------------------------------------------------------------
+  // tuning panel
+  // ------------------------------------------------------------------
+  function buildTunePanel() {
+    var box = $("dbgTune");
+    box.innerHTML = "";
+    TUNE_SPEC.forEach(function (spec) {
+      var row = document.createElement("div");
+      row.className = "trow";
+      var lab = document.createElement("div");
+      lab.className = "lab";
+      var name = document.createElement("span");
+      name.textContent = spec.label;
+      var val = document.createElement("span");
+      val.textContent = TUNE[spec.k];
+      lab.appendChild(name); lab.appendChild(val);
+
+      var sl = document.createElement("input");
+      sl.type = "range";
+      sl.min = spec.min; sl.max = spec.max; sl.step = spec.step;
+      sl.value = TUNE[spec.k];
+      sl.addEventListener("input", function () {
+        TUNE[spec.k] = parseFloat(sl.value);
+        val.textContent = TUNE[spec.k];
+        saveTune();
+      });
+
+      row.appendChild(lab); row.appendChild(sl);
+      box.appendChild(row);
+    });
+    $("dbgMask").checked = !!TUNE.showMask;
+  }
+
+  function refreshTuneStats() {
+    if ($("debug").classList.contains("hidden")) return;
+    var navOk = !!navel;
+    var lines = [
+      "fps   " + dbg.fps.toFixed(0) + (lowQ ? " (lowQ)" : "") + "   thumb " + TW + "x" + TH,
+      "navel " + dbg.navelScore.toFixed(1) + "  -> " + (navelManual ? "MANUAL" : (navOk ? "LOCK" : "no")),
+      "mask  " + (dbg.maskFrac * 100).toFixed(0) + "%  " + (maskValid ? "valid" : "INVALID"),
+      "conf  " + flowConf.toFixed(3) + "   tex " + flowTex.toFixed(1),
+      "flow  " + dbg.dx.toFixed(2) + ", " + dbg.dy.toFixed(2),
+      "drift " + camX.toFixed(0) + ", " + camY.toFixed(0),
+      "torch " + (torchSupported ? "yes" : "no") + "   mode " + MODE
+    ];
+    $("dbgStats").textContent = lines.join("\n");
+  }
+
+  function toggleDebug(show) {
+    var d = $("debug");
+    if (show) { buildTunePanel(); d.classList.remove("hidden"); refreshTuneStats(); }
+    else d.classList.add("hidden");
+  }
+
+  // long-press the worm-count chip to open it — hard to hit by accident
+  (function () {
+    var timer = null;
+    var chip = $("count");
+    function down() {
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        toggleDebug($("debug").classList.contains("hidden"));
+        buzz(60);
+      }, 800);
+    }
+    function up() { clearTimeout(timer); }
+    chip.addEventListener("pointerdown", down);
+    chip.addEventListener("pointerup", up);
+    chip.addEventListener("pointercancel", up);
+    chip.addEventListener("pointerleave", up);
+  })();
+
+  $("dbgClose").addEventListener("click", function () { toggleDebug(false); });
+  $("dbgMask").addEventListener("change", function () {
+    TUNE.showMask = $("dbgMask").checked ? 1 : 0;
+    saveTune();
+  });
+  $("dbgReset").addEventListener("click", function () {
+    for (var k in TUNE_DEFAULTS) TUNE[k] = TUNE_DEFAULTS[k];
+    saveTune(); buildTunePanel();
+    $("dbgOut").textContent = "reset to defaults";
+  });
+  $("dbgCopy").addEventListener("click", function () {
+    var txt = JSON.stringify(TUNE);
+    $("dbgOut").textContent = txt;
+    try {
+      if (navigator.clipboard) navigator.clipboard.writeText(txt).catch(function () {});
+    } catch (e) {}
+  });
+
+  // ------------------------------------------------------------------
   // wiring
   // ------------------------------------------------------------------
   $("go").addEventListener("click", openDiet);
@@ -1885,6 +2115,15 @@
     var vh = r.height || canvas.clientHeight || H || 1;
     applyFocus(sx / vw, sy / vh);
 
+    // during the scan, a tap places the belly button by hand
+    if (MODE === "scanning") {
+      setNavelManual(sx, sy);
+      navelAnnounced = true;
+      shakeUntil = performance.now() / 1000 + 6;   // let it sit before the scan lines resume
+      setStatus("Belly button set 👆 tap again to move it");
+      buzz(35);
+      return;
+    }
     if (MODE !== "play" || !worms.length) {
       setStatus("Focusing there 🎯");
       buzz(15);

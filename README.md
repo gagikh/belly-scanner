@@ -51,6 +51,13 @@ gets too small to detect.
 footer reads `SEEKING…` while it looks, then `NAVEL LOCK` with a dashed target ring over
 the belly button. That's your cue.
 
+**Can't find it? Tap where it is.** On a small child the navel is shallow and smooth,
+with almost no shadow for the detector to catch, so it often won't find one — after a
+few seconds it asks you to tap. A hand-placed navel shows a solid green ring instead of
+the dashed blue one, the footer reads `NAVEL SET`, and it stays exactly where you put it.
+Tap again to move it. This is the reliable route with toddlers; don't fight the
+auto-detection.
+
 **Tap 👁️ SEE INSIDE** when the suspense has built — the scan never stops on its own, so
 take as long as you like.
 
@@ -79,6 +86,34 @@ The footer readout tells you which part is struggling:
 | `TRK WEAK` | Too little detail to track | Keep the torch on; back off if the skin is blown out white; move slower |
 | `TRK LOCK` | Worms are holding position | Nothing to do |
 | `** MOVING **` | Being shaken | Slow down — fast movement outruns the tracker |
+
+### Tuning the detection (hidden panel)
+
+The computer-vision thresholds are adjustable on the phone, because the right values
+depend on your camera, your lighting and your kid's skin — they can't be guessed from a
+desk. **Long-press the 🪱 counter chip for about a second** to open the panel.
+
+It shows live readings — frame rate, the current navel score, body-mask coverage, match
+confidence and texture, measured flow, accumulated drift — and four sliders:
+
+| Slider | Raise it when | Lower it when |
+|---|---|---|
+| `navel ≤` | It's locking onto moles, shadows or nipples | It never says `NAVEL LOCK` |
+| `mask k` | The body mask is bleeding into the background | The mask is missing parts of the tummy |
+| `conf ≥` | Worms jitter or drift when the phone is still | Worms don't follow the belly at all |
+| `tex ≥` | Tracking latches onto noise on plain skin | It reports `TRK WEAK` on skin that looks fine |
+
+**Tick "show mask + window"** to see what the code sees: the detected body in green, the
+match window in amber, the tracking anchor as a red cross. This is the fastest way to
+tell whether a problem is the mask, the navel, or the tracking.
+
+Changes save immediately and survive restarts. **defaults** puts everything back;
+**copy values** puts the current settings on the clipboard.
+
+A good procedure: point at a real tummy with the torch on, open the panel, and watch
+`navel` — the number is the detection score, and anything below the `navel ≤` slider
+counts as a lock. Nudge the slider until it locks reliably on the belly button and
+nowhere else, then do the same for `conf` and `tex` while moving the phone slowly.
 
 Other things worth knowing:
 
