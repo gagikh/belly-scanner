@@ -1,0 +1,13 @@
+# Generated Capacitor/Android project — rebuilt by build-apk.ps1
+android-build/
+
+# Build output
+*.apk
+*.aab
+
+# Signing material — never commit these
+*.keystore
+*.jks
+keystore.properties
+
+node_modules/
