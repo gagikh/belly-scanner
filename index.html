@@ -452,11 +452,337 @@
   var ori = { x: 0, y: 0 };         // smoothed
   var oriRef = null;                // orientation when the worms were placed
   var camX = 0, camY = 0;           // how far the view has moved, in pixels
+  var camTX = 0, camTY = 0;         // raw accumulated offset; camX eases toward it
+  var trkTick = 0;
+  // the spot on the belly we're locked onto — the match window follows it
+  var anchorW = { x: 0, y: 0 };
   var frozenCam = { x: 0, y: 0 };
   var motionMag = 0, motionOn = false, motionAsked = false;
 
-  // how many pixels one degree of turn is worth — roughly a screen width per 50°
-  function pxPerDeg() { return (W || 400) / 50; }
+  // ==================================================================
+  // OPTICAL FLOW TRACKING
+  //
+  // The gyroscope only sees rotation, but sliding a phone across a belly is
+  // mostly translation — which is why gyro-only anchoring felt wrong. So we
+  // track the camera picture itself: downscale each frame to a thumbnail and
+  // find the shift that best lines it up with the previous one.
+  //
+  // Frames are zero-meaned before comparing, so the torch switching on or the
+  // camera re-exposing doesn't get mistaken for movement.
+  // ==================================================================
+  var TW = 48, TH = 96;              // tracker thumbnail size (matches screen aspect)
+  var trkCv = null, trkCtx = null;
+  var trkPrev = null, trkCur = null;
+  var trkHasPrev = false;
+  var flowConf = 0;                  // 0..1, how much to trust the last estimate
+  var flowTex = 0;                   // how much texture there is to track
+
+  function trackerInit() {
+    // Match the thumbnail to the screen's aspect ratio. A 4:3 thumbnail on a
+    // tall phone would give plenty of horizontal resolution and almost none
+    // vertically, which makes up-down tracking mushy.
+    var aspect = (W && H) ? W / H : 0.5;
+    TW = clamp(Math.round(Math.sqrt(3600 * aspect)), 32, 96);
+    TH = clamp(Math.round(3600 / TW), 32, 128);
+
+    trkCv = document.createElement("canvas");
+    trkCv.width = TW; trkCv.height = TH;
+    try { trkCtx = trkCv.getContext("2d", { willReadFrequently: true }); }
+    catch (e) { trkCtx = trkCv.getContext("2d"); }
+
+    trkPrev = new Int16Array(TW * TH);
+    trkCur = new Int16Array(TW * TH);
+    integ = null; mask = null; maskStack = null;   // sizes changed, rebuild lazily
+    trkHasPrev = false;
+    flowConf = 0;
+    maskValid = false;
+  }
+
+  function trackerGrab() {
+    if (!trkCtx || !video.videoWidth) return false;
+    var d;
+    try {
+      // Crop exactly the region that object-fit:cover shows on screen, so one
+      // thumbnail pixel is a fixed number of screen pixels everywhere. Without
+      // this, thumbnail coords only line up with the screen at dead centre.
+      var vw = video.videoWidth, vh = video.videoHeight;
+      var s = Math.max(W / vw, H / vh);
+      var srcW = Math.min(vw, W / s), srcH = Math.min(vh, H / s);
+      trkCtx.drawImage(video, (vw - srcW) / 2, (vh - srcH) / 2, srcW, srcH, 0, 0, TW, TH);
+      d = trkCtx.getImageData(0, 0, TW, TH).data;
+    } catch (e) { return false; }
+
+    var n = TW * TH, sum = 0, i = 0, p = 0;
+    for (; p < n; p++, i += 4) {
+      var v = (d[i] * 77 + d[i + 1] * 151 + d[i + 2] * 28) >> 8;   // luminance
+      trkCur[p] = v; sum += v;
+    }
+    var mean = sum / n;
+    for (p = 0; p < n; p++) trkCur[p] -= mean;
+    return true;
+  }
+
+  // MARGIN must exceed SEARCH so the shifted lookup can never leave the buffer
+  var SEARCH = 6, MARGIN = 7;
+
+  // The match window follows the anchor point rather than covering the whole
+  // frame. Matching the patch you actually care about beats averaging in
+  // clothing, furniture and whatever else is at the edges.
+  var regX0 = MARGIN, regX1 = 1, regY0 = MARGIN, regY1 = 1;
+
+  function setRegion(cx, cy, half) {
+    regX0 = Math.max(MARGIN, Math.round(cx - half));
+    regX1 = Math.min(TW - MARGIN, Math.round(cx + half));
+    regY0 = Math.max(MARGIN, Math.round(cy - half));
+    regY1 = Math.min(TH - MARGIN, Math.round(cy + half));
+    // anchor drifted off-frame — fall back to matching everything
+    if (regX1 - regX0 < 10) { regX0 = MARGIN; regX1 = TW - MARGIN; }
+    if (regY1 - regY0 < 10) { regY0 = MARGIN; regY1 = TH - MARGIN; }
+  }
+
+  function sadAt(ox, oy) {
+    var s = 0, n = 0;
+    for (var y = regY0; y < regY1; y++) {
+      var row = y * TW, prow = (y - oy) * TW;
+      for (var x = regX0; x < regX1; x += 2) {
+        var diff = trkCur[row + x] - trkPrev[prow + x - ox];
+        s += diff < 0 ? -diff : diff;
+        n++;
+      }
+    }
+    return n ? s / n : 1e9;
+  }
+
+  // fit a parabola through three samples to get a sub-pixel minimum
+  function subPixel(sm, s0, sp) {
+    var den = sm - 2 * s0 + sp;
+    if (Math.abs(den) < 1e-6) return 0;
+    return clamp(0.5 * (sm - sp) / den, -1, 1);
+  }
+
+  // ------------------------------------------------------------------
+  // NAVEL DETECTION
+  //
+  // The belly button is the one strong landmark on a belly: a small, round,
+  // recessed patch that reads darker than the skin around it — especially with
+  // the torch on. A centre-surround test finds it cheaply. Whatever scores
+  // most strongly "dark blob on lighter background" is almost always it.
+  // ------------------------------------------------------------------
+  var integ = null;
+  var navel = null;        // smoothed {x,y} in thumbnail coords
+  var navelMiss = 0, navelAnnounced = false;
+
+  function buildIntegral() {
+    var IW = TW + 1;
+    if (!integ) integ = new Float64Array(IW * (TH + 1));
+    for (var i = 0; i < IW; i++) integ[i] = 0;
+    for (var y = 0; y < TH; y++) {
+      var rowSum = 0;
+      integ[(y + 1) * IW] = 0;
+      for (var x = 0; x < TW; x++) {
+        rowSum += trkCur[y * TW + x];
+        integ[(y + 1) * IW + x + 1] = integ[y * IW + x + 1] + rowSum;
+      }
+    }
+  }
+
+  function boxSum(x0, y0, x1, y1) {
+    var IW = TW + 1;
+    return integ[y1 * IW + x1] - integ[y0 * IW + x1] - integ[y1 * IW + x0] + integ[y0 * IW + x0];
+  }
+
+  // ------------------------------------------------------------------
+  // BODY MASK
+  //
+  // With the torch on, the torso is the bright thing filling the middle of the
+  // frame and the background falls away darker. Threshold on that, then keep
+  // only the blob connected to the centre, and we have a rough body outline.
+  // Worms get confined to it so they never crawl across the bedsheets.
+  // ------------------------------------------------------------------
+  var mask = null, maskTmp = null, maskStack = null, maskValid = false;
+
+  // 3x3 majority vote: fills pinholes and shaves off speckle, so the outline
+  // comes out as a line rather than confetti
+  function despeckle() {
+    if (!maskTmp || maskTmp.length !== mask.length) maskTmp = new Uint8Array(mask.length);
+    maskTmp.set(mask);
+    for (var y = 1; y < TH - 1; y++) {
+      for (var x = 1; x < TW - 1; x++) {
+        var p = y * TW + x;
+        var n = maskTmp[p - TW - 1] + maskTmp[p - TW] + maskTmp[p - TW + 1] +
+                maskTmp[p - 1]      + maskTmp[p]      + maskTmp[p + 1] +
+                maskTmp[p + TW - 1] + maskTmp[p + TW] + maskTmp[p + TW + 1];
+        mask[p] = n >= 5 ? 1 : 0;
+      }
+    }
+  }
+
+  function buildBodyMask() {
+    var n = TW * TH, i;
+    if (!mask || mask.length !== n) { mask = new Uint8Array(n); maskStack = new Int32Array(n); maskTmp = null; }
+
+    var s2 = 0;
+    for (i = 0; i < n; i++) s2 += trkCur[i] * trkCur[i];
+    var sd = Math.sqrt(s2 / n) || 1;
+    var thr = -0.2 * sd;            // trkCur is zero-mean, so 0 is average brightness
+
+    for (i = 0; i < n; i++) mask[i] = trkCur[i] > thr ? 1 : 0;
+    despeckle();
+    despeckle();
+
+    // seed at the centre, or the nearest lit pixel to it
+    var cx = TW >> 1, cy = TH >> 1, seed = -1;
+    for (var rad = 0; rad < 12 && seed < 0; rad++) {
+      for (var dy = -rad; dy <= rad && seed < 0; dy++) {
+        for (var dx = -rad; dx <= rad; dx++) {
+          var x = cx + dx, y = cy + dy;
+          if (x < 0 || y < 0 || x >= TW || y >= TH) continue;
+          if (mask[y * TW + x] === 1) { seed = y * TW + x; break; }
+        }
+      }
+    }
+    if (seed < 0) { maskValid = false; return; }
+
+    // flood fill outward from the seed
+    var sp = 0, kept = 0;
+    maskStack[sp++] = seed;
+    mask[seed] = 2;
+    while (sp > 0) {
+      var p = maskStack[--sp];
+      kept++;
+      var px = p % TW, py = (p / TW) | 0;
+      if (px > 0        && mask[p - 1]  === 1) { mask[p - 1]  = 2; maskStack[sp++] = p - 1; }
+      if (px < TW - 1   && mask[p + 1]  === 1) { mask[p + 1]  = 2; maskStack[sp++] = p + 1; }
+      if (py > 0        && mask[p - TW] === 1) { mask[p - TW] = 2; maskStack[sp++] = p - TW; }
+      if (py < TH - 1   && mask[p + TW] === 1) { mask[p + TW] = 2; maskStack[sp++] = p + TW; }
+    }
+    for (i = 0; i < n; i++) mask[i] = mask[i] === 2 ? 1 : 0;
+
+    // if it covers almost nothing or almost everything, it isn't telling us anything
+    var frac = kept / n;
+    maskValid = frac > 0.12 && frac < 0.96;
+  }
+
+  // thumbnail-space test
+  function onBodyT(tx, ty) {
+    if (!maskValid) return true;
+    var x = Math.round(tx), y = Math.round(ty);
+    if (x < 0 || y < 0 || x >= TW || y >= TH) return false;
+    return mask[y * TW + x] === 1;
+  }
+
+  // screen-space test
+  function onBody(sx, sy) {
+    if (!maskValid || !W || !H) return true;
+    return onBodyT(sx / W * TW, sy / H * TH);
+  }
+
+  function detectNavel() {
+    buildIntegral();
+    var best = null;
+    var sx0 = Math.round(TW * 0.22), sx1 = Math.round(TW * 0.78);
+    var sy0 = Math.round(TH * 0.24), sy1 = Math.round(TH * 0.80);
+    var radii = [3, 4, 5];
+
+    for (var ri = 0; ri < radii.length; ri++) {
+      var r = radii[ri], R = Math.round(r * 2.4);
+      var iN = (2 * r + 1) * (2 * r + 1);
+      var oN = (2 * R + 1) * (2 * R + 1);
+      for (var y = sy0; y < sy1; y++) {
+        if (y - R < 0 || y + R + 1 > TH) continue;
+        for (var x = sx0; x < sx1; x++) {
+          if (x - R < 0 || x + R + 1 > TW) continue;
+          var iS = boxSum(x - r, y - r, x + r + 1, y + r + 1);
+          var oS = boxSum(x - R, y - R, x + R + 1, y + R + 1);
+          if (!onBodyT(x, y)) continue;                      // a dark patch off-body isn't a navel
+          var score = (iS / iN) - ((oS - iS) / (oN - iN));   // negative = darker than surroundings
+          if (!best || score < best.score) best = { x: x, y: y, score: score };
+        }
+      }
+    }
+    if (!best || best.score > -5) return null;   // nothing convincingly blob-like
+    return best;
+  }
+
+  // run periodically while scanning; smooths so the marker doesn't twitch
+  function updateNavel() {
+    if (!trackerGrab()) return;
+    buildBodyMask();
+    var hit = detectNavel();
+    trkPrev.set(trkCur);
+    trkHasPrev = true;
+    if (hit) {
+      navelMiss = 0;
+      if (!navel) navel = { x: hit.x, y: hit.y };
+      else { navel.x += (hit.x - navel.x) * 0.35; navel.y += (hit.y - navel.y) * 0.35; }
+    } else if (navel && ++navelMiss > 12) {
+      navel = null;
+    }
+  }
+
+  function navelScreen() {
+    if (!navel || !W || !H) return null;
+    return { x: navel.x / TW * W, y: navel.y / TH * H };
+  }
+
+  // Measures the texture inside the current match window, so a bare patch of
+  // skin doesn't get reported as a confident lock.
+  function regionTexture() {
+    var s = 0, n = 0;
+    for (var y = regY0; y < regY1; y += 2) {
+      var row = y * TW;
+      for (var x = regX0; x < regX1; x += 2) {
+        var v = trkCur[row + x];
+        s += v < 0 ? -v : v;
+        n++;
+      }
+    }
+    return n ? s / n : 0;
+  }
+
+  // returns the image shift in thumbnail pixels, or null when unreliable
+  function trackerEstimate(anchorTX, anchorTY) {
+    if (!trackerGrab()) return null;
+    setRegion(anchorTX, anchorTY, 13);
+    if (!trkHasPrev) {
+      trkPrev.set(trkCur); trkHasPrev = true;
+      return null;
+    }
+
+    var best = 1e9, bx = 0, by = 0, total = 0, count = 0, oy, ox, s;
+
+    // coarse pass on a step-2 grid
+    for (oy = -SEARCH; oy <= SEARCH; oy += 2) {
+      for (ox = -SEARCH; ox <= SEARCH; ox += 2) {
+        s = sadAt(ox, oy);
+        total += s; count++;
+        if (s < best) { best = s; bx = ox; by = oy; }
+      }
+    }
+    // refine to whole pixels around the winner
+    for (oy = by - 1; oy <= by + 1; oy++) {
+      for (ox = bx - 1; ox <= bx + 1; ox++) {
+        if (ox < -SEARCH || ox > SEARCH || oy < -SEARCH || oy > SEARCH) continue;
+        s = sadAt(ox, oy);
+        if (s < best) { best = s; bx = ox; by = oy; }
+      }
+    }
+
+    var avg = count ? total / count : 1;
+    flowConf = avg > 0 ? clamp((avg - best) / avg, 0, 1) : 0;
+    flowTex = regionTexture();
+
+    var dx = bx, dy = by;
+    // sub-pixel polish, so slow drags don't move in 6px steps
+    if (bx > -SEARCH && bx < SEARCH) dx += subPixel(sadAt(bx - 1, by), best, sadAt(bx + 1, by));
+    if (by > -SEARCH && by < SEARCH) dy += subPixel(sadAt(bx, by - 1), best, sadAt(bx, by + 1));
+
+    trkPrev.set(trkCur);
+
+    // a blank, textureless view gives a meaningless "match" — ignore it
+    if (flowTex < 5 || flowConf < 0.05) return null;
+    return { x: dx, y: dy };
+  }
 
   function onOrient(e) {
     if (e.gamma == null && e.beta == null) return;
@@ -501,14 +827,68 @@
     }
 
     if (isFrozen) { camX = frozenCam.x; camY = frozenCam.y; return; }
+
+    // While scanning we're not anchoring anything yet — we're hunting for the
+    // navel so there's something solid to lock onto when the worms appear.
+    if (MODE === "scanning") {
+      trkTick++;
+      if (trkTick % 5 === 0) {
+        var had = !!navel;
+        updateNavel();
+        var ns = navelScreen();
+        if (ns && !had && !navelAnnounced) {
+          navelAnnounced = true;
+          shakeUntil = 0;
+          scanMsgIdx = -1;
+          setStatus("Belly button found 🎯 hold it there");
+          buzz(30);
+        }
+        if (ns && trkTick % 40 === 0) applyFocus(ns.x / (W || 1), ns.y / (H || 1));
+      }
+      camX = 0; camY = 0;
+      return;
+    }
+
     if (!oriRef) { camX = 0; camY = 0; return; }
-    var p = pxPerDeg();
-    camX = (ori.x - oriRef.x) * p;
-    camY = (ori.y - oriRef.y) * p;
+
+    // Tracking runs at ~30Hz; accumulating into a target and easing toward it
+    // means a skipped frame costs nothing and jitter gets smoothed out without
+    // losing any of the real displacement.
+    trkTick++;
+    if ((trkTick & 1) === 0) {
+      // where the locked-on spot currently sits, in thumbnail coordinates
+      var asx = anchorW.x - camX, asy = anchorW.y - camY;
+      var f = trackerEstimate(asx / (W || 1) * TW, asy / (H || 1) * TH);
+      if (f) {
+        camTX -= f.x * (W / TW);
+        camTY -= f.y * (H / TH);
+        camTX = clamp(camTX, -W * 1.6, W * 1.6);
+        camTY = clamp(camTY, -H * 1.6, H * 1.6);
+      }
+    }
+    var e = Math.min(1, dt * 14);
+    camX += (camTX - camX) * e;
+    camY += (camTY - camY) * e;
   }
 
   // call when the worms are placed — "here is where the belly is"
-  function resetOrientationRef() { oriRef = { x: ori.x, y: ori.y }; camX = 0; camY = 0; }
+  function resetOrientationRef() {
+    oriRef = { x: ori.x, y: ori.y };
+    camX = 0; camY = 0; camTX = 0; camTY = 0;
+    // lock onto the navel if we found one — it's the most trackable thing
+    // on a belly, and it stops the worms sliding around
+    var ns = navelScreen();
+    anchorW.x = ns ? ns.x : W * 0.5;
+    anchorW.y = ns ? ns.y : H * 0.5;
+    if (ns) applyFocus(ns.x / (W || 1), ns.y / (H || 1));
+    trackerInit();
+  }
+
+  // lock onto a new spot: focus there, and match there
+  function lockOnto(sx, sy) {
+    anchorW.x = sx + camX;
+    anchorW.y = sy + camY;
+  }
 
   // screen position <-> belly ("world") position
   function toWorld(sx, sy) { return { x: sx + camX, y: sy + camY }; }
@@ -649,9 +1029,26 @@
   }
 
   function spawnPoint() {
-    for (var i = 0; i < 60; i++) {
-      var x = rand(W * 0.16, W * 0.84);
-      var y = rand(H * 0.30, H * 0.74);
+    // if we found the navel, put the worms in orbit around it — that's where a
+    // kid expects the inside of their tummy to be
+    var ns = (typeof navelScreen === "function") ? navelScreen() : null;
+    var i, x, y;
+    if (ns) {
+      for (i = 0; i < 80; i++) {
+        var a = rand(0, 6.2832), r = rand(55, 135);
+        x = ns.x + Math.cos(a) * r;
+        y = ns.y + Math.sin(a) * r;
+        if (insideCone(x, y, 40) && onBody(x, y)) return { x: x, y: y };
+      }
+    }
+    for (i = 0; i < 80; i++) {
+      x = rand(W * 0.16, W * 0.84);
+      y = rand(H * 0.30, H * 0.74);
+      if (insideCone(x, y, 40) && onBody(x, y)) return { x: x, y: y };
+    }
+    for (i = 0; i < 40; i++) {      // last resort: ignore the mask
+      x = rand(W * 0.16, W * 0.84);
+      y = rand(H * 0.30, H * 0.74);
       if (insideCone(x, y, 40)) return { x: x, y: y };
     }
     return { x: W / 2, y: H * 0.5 };
@@ -711,17 +1108,11 @@
       }
     }
 
-    var nx = this.x + Math.cos(this.dir) * this.speed * dt;
-    var ny = this.y + Math.sin(this.dir) * this.speed * dt;
-
-    // the beam lives in screen space, so test there
-    if (this.dying || insideCone(nx - camX, ny - camY, this.thick * 2.2)) {
-      this.x = nx; this.y = ny;
-    } else {
-      var toMid = Math.atan2((H * 0.5 + camY) - this.y, (W / 2 + camX) - this.x);
-      var dm = Math.atan2(Math.sin(toMid - this.dir), Math.cos(toMid - this.dir));
-      this.dir += clamp(dm, -1, 1) * 0.55 + rand(-0.2, 0.2);
-    }
+    // No beam-edge steering here: the home tether already keeps a worm in a
+    // small patch, and pushing it back toward screen centre would undo the
+    // anchoring the moment you moved the phone.
+    this.x += Math.cos(this.dir) * this.speed * dt;
+    this.y += Math.sin(this.dir) * this.speed * dt;
 
     // body follows the head with fixed segment spacing
     var px = this.x, py = this.y;
@@ -1125,10 +1516,18 @@
     var fy = h - 30;
     c.fillStyle = "#04060a";
     c.fillRect(0, fy - 6, w, h - fy + 6);
-    var deg = Math.round(oriRef ? (ori.x - oriRef.x) : ori.x);
     c.font = "600 11px " + mono;
     c.fillStyle = "rgba(215,230,255,0.6)";
-    c.fillText("MI 0.7   TIS 0.3   Probe " + (deg > 0 ? "+" : "") + deg + "°", 12, fy);
+    c.fillText("MI 0.7   TIS 0.3", 12, fy);
+    // what the vision side is doing, so a weak lock is visible rather than baffling
+    if (MODE === "scanning") {
+      c.fillStyle = navel ? "rgba(150,225,180,0.85)" : "rgba(215,230,255,0.5)";
+      c.fillText(navel ? "NAVEL LOCK" : "SEEKING…", 128, fy);
+    } else if (MODE === "play") {
+      var locked = flowConf > 0.12 && flowTex >= 5;
+      c.fillStyle = locked ? "rgba(150,225,180,0.8)" : "rgba(255,200,120,0.85)";
+      c.fillText(locked ? "TRK LOCK" : "TRK WEAK", 128, fy);
+    }
 
     c.textAlign = "right";
     if (motionMag > 0.18) {
@@ -1194,6 +1593,52 @@
     c.restore();
   }
 
+  // Faint dots along the detected torso outline — shows the analysis working
+  // without pretending to be anatomy.
+  function drawBodyEdges(c, w, h) {
+    if (!maskValid || !mask) return;
+    var kx = w / TW, ky = h / TH;
+    c.save();
+    conePath(c, w, h, false); c.clip();
+    c.fillStyle = "rgba(150,220,255,0.30)";
+    for (var y = 1; y < TH - 1; y++) {
+      for (var x = 1; x < TW - 1; x++) {
+        var p = y * TW + x;
+        if (mask[p] !== 1) continue;
+        if (mask[p - 1] && mask[p + 1] && mask[p - TW] && mask[p + TW]) continue;  // interior
+        c.fillRect(x * kx - 1, y * ky - 1, 2.5, 2.5);
+      }
+    }
+    c.restore();
+  }
+
+  // Target marker over the belly button.
+  function drawNavelMark(c, w, h, t) {
+    var ns = navelScreen();
+    if (!ns) return;
+    c.save();
+    c.translate(ns.x, ns.y);
+    c.strokeStyle = "rgba(165,235,255,0.9)";
+    c.lineWidth = 2;
+    c.setLineDash([5, 6]);
+    c.lineDashOffset = -t * 16;
+    c.beginPath(); c.arc(0, 0, 27, 0, 6.2832); c.stroke();
+    c.setLineDash([]);
+    c.beginPath();
+    for (var k = 0; k < 4; k++) {
+      var a = k * Math.PI / 2 + Math.PI / 4;
+      c.moveTo(Math.cos(a) * 15, Math.sin(a) * 15);
+      c.lineTo(Math.cos(a) * 22, Math.sin(a) * 22);
+    }
+    c.stroke();
+    c.fillStyle = "rgba(165,235,255,0.95)";
+    c.font = "600 10px ui-monospace, Menlo, Consolas, monospace";
+    c.textAlign = "center";
+    c.fillText("NAVEL", 0, 42);
+    c.textAlign = "left";
+    c.restore();
+  }
+
   // full ultrasound frame. worms are clipped inside the fan so they
   // always look like they're actually in there.
   function renderScan(c, w, h, t, opts) {
@@ -1208,7 +1653,11 @@
     }
     // speckle goes on LAST so the worms pick up the same grain as the tissue
     drawSpeckle(c, w, h, t);
-    if (opts.beam) drawBeam(c, w, h, t);
+    if (opts.beam) {
+      drawBeam(c, w, h, t);
+      drawBodyEdges(c, w, h);
+      drawNavelMark(c, w, h, t);
+    }
     drawConeFrame(c, w, h);
     drawChrome(c, w, h, t);
   }
@@ -1326,6 +1775,9 @@
       $("freezeBtn").style.borderColor = "rgba(160,195,240,.34)";
       MODE = "scanning"; scanT = 0; worms = []; parts = [];
       scanMsgIdx = -1; noisePat = null;
+      oriRef = null; navel = null; navelMiss = 0; navelAnnounced = false;
+      maskValid = false; trkTick = 0;
+      trackerInit();
       updateCount();
       setStatus(SCAN_LINES[0]);
       setTorch(true);
@@ -1436,6 +1888,7 @@
 
     var p = toWorld(sx, sy);
     target.homeX = p.x; target.homeY = p.y;
+    lockOnto(sx, sy);          // track the spot you just picked
     burst(sx, sy, "#dfe9f5", 8);
     buzz(25);
     setStatus(best < target.thick * 3.5

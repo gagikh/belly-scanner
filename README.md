@@ -36,6 +36,62 @@ All healthy? The tummy comes back clear, and the app says why.
 
 ---
 
+## How to use it
+
+**Set up.** Dim the room a little and use bare skin — the app turns the flashlight on
+by itself, and the torch on skin is what gives it something to lock onto. Have the child
+lie down. Tick the food list *before* you hand the phone over, so the result isn't
+given away.
+
+**Hold the phone flat**, screen up, roughly **20–30 cm above the tummy**, parallel to
+the belly rather than tilted at it. Too close and it can't focus; too far and the navel
+gets too small to detect.
+
+**Put the navel in the middle of the screen** and hold still for a second or two. The
+footer reads `SEEKING…` while it looks, then `NAVEL LOCK` with a dashed target ring over
+the belly button. That's your cue.
+
+**Tap 👁️ SEE INSIDE** when the suspense has built — the scan never stops on its own, so
+take as long as you like.
+
+**Keep the navel in view afterwards.** The worms are pinned to the belly, not to the
+screen, and the app holds them there by tracking the picture. Move the phone slowly and
+smoothly. Sweep away and the worms slide off the edge; come back and they're still where
+they were.
+
+**Tap anywhere on the tummy** to send the nearest worm to that spot and pin it there —
+handy for putting one right on the belly button. Tapping also re-points the autofocus.
+
+**❄️ Hold** freezes the picture so you can lift the phone away and show the other child.
+**📸** saves the scan, and every reveal saves one automatically — **📁 Saved scans** on
+the home screen keeps the last 8.
+
+**WHAT DOES IT MEAN?** ends the scan with the verdict and the food that caused it.
+
+### If it isn't working
+
+The footer readout tells you which part is struggling:
+
+| Footer shows | What it means | What to do |
+|---|---|---|
+| `SEEKING…` | No navel found yet | More light, bare skin, move to 20–30 cm, centre the navel, hold still |
+| `NAVEL LOCK` | Belly button found | Go ahead and reveal |
+| `TRK WEAK` | Too little detail to track | Keep the torch on; back off if the skin is blown out white; move slower |
+| `TRK LOCK` | Worms are holding position | Nothing to do |
+| `** MOVING **` | Being shaken | Slow down — fast movement outruns the tracker |
+
+Other things worth knowing:
+
+- **Flashlight button does nothing?** Some browsers don't allow torch control. Android
+  Chrome does; iOS Safari doesn't. The installed APK always does.
+- **Worms drift slowly off the spot?** Point at an area with some texture — a freckle,
+  a fold, the navel itself. A perfectly flat, evenly lit patch of skin has nothing to
+  track against.
+- **Camera won't start?** It only works on `https://` or `localhost`. Opening the file
+  directly from the filesystem won't do.
+
+---
+
 ## What's in it
 
 **Ultrasound, not sci-fi.** The camera feed is desaturated and contrast-pushed, masked
