@@ -397,6 +397,30 @@
       .catch(function () { return false; });
   }
 
+  // Keep the belly sharp. Not every phone exposes these, so everything is optional.
+  function applyFocus(nx, ny) {
+    if (!track || !track.getCapabilities || !track.applyConstraints) return;
+    var caps;
+    try { caps = track.getCapabilities() || {}; } catch (e) { return; }
+    var adv = [];
+
+    if (caps.focusMode) {
+      var modes = caps.focusMode;
+      if (modes.indexOf("continuous") >= 0) adv.push({ focusMode: "continuous" });
+      else if (modes.indexOf("single-shot") >= 0) adv.push({ focusMode: "single-shot" });
+    }
+    // aim the focus (and metering, where supported) at the spot that was tapped
+    if (nx != null && caps.pointsOfInterest) {
+      var pt = [{ x: clamp(nx, 0, 1), y: clamp(ny, 0, 1) }];
+      adv.push({ pointsOfInterest: pt });
+      if (caps.exposureMode && caps.exposureMode.indexOf("continuous") >= 0) {
+        adv.push({ exposureMode: "continuous" });
+      }
+    }
+    if (!adv.length) return;
+    try { track.applyConstraints({ advanced: adv }).catch(function () {}); } catch (e) {}
+  }
+
   function stopCamera() {
     setTorch(false);
     if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); }
@@ -418,17 +442,27 @@
   // ------------------------------------------------------------------
   // MOTION SENSORS — moving the phone moves the picture, like a real probe
   // ------------------------------------------------------------------
-  var tiltRaw = { x: 0, y: 0 };     // -1..1 from the gyroscope
-  var tilt = { x: 0, y: 0 };        // smoothed
-  var panX = 0, panY = 0;           // pixels the image is shifted by
-  var frozenPan = { x: 0, y: 0 };
+  // Worms are anchored to a spot on the belly, not to the screen. The live
+  // camera already shows the real movement, so all we do is shift the worms
+  // the opposite way as the phone turns, which pins them in place.
+  //
+  // Orientation comes from beta/gamma, which are gravity-referenced and so
+  // don't drift the way an integrated gyro would.
+  var rawOri = { x: 0, y: 0 };      // degrees, straight off the sensor
+  var ori = { x: 0, y: 0 };         // smoothed
+  var oriRef = null;                // orientation when the worms were placed
+  var camX = 0, camY = 0;           // how far the view has moved, in pixels
+  var frozenCam = { x: 0, y: 0 };
   var motionMag = 0, motionOn = false, motionAsked = false;
+
+  // how many pixels one degree of turn is worth — roughly a screen width per 50°
+  function pxPerDeg() { return (W || 400) / 50; }
 
   function onOrient(e) {
     if (e.gamma == null && e.beta == null) return;
     motionOn = true;
-    tiltRaw.x = clamp((e.gamma || 0) / 40, -1, 1);          // roll left/right
-    tiltRaw.y = clamp(((e.beta || 0) - 50) / 40, -1, 1);    // pitch, around a natural holding angle
+    rawOri.x = e.gamma || 0;   // roll: left / right
+    rawOri.y = e.beta || 0;    // pitch: up / down
   }
 
   function onMotion(e) {
@@ -457,17 +491,27 @@
   }
 
   function updateMotion(dt) {
-    var k = Math.min(1, dt * 5.5);
-    tilt.x += (tiltRaw.x - tilt.x) * k;
-    tilt.y += (tiltRaw.y - tilt.y) * k;
+    var k = Math.min(1, dt * 9);
+    ori.x += (rawOri.x - ori.x) * k;
+    ori.y += (rawOri.y - ori.y) * k;
+
     // the hiss swells a little when the probe is moving
     if (noiseGain) {
       try { noiseGain.gain.value = clamp(0.04 + motionMag * 0.06, 0, 0.11); } catch (e) {}
     }
-    if (isFrozen) { panX = frozenPan.x; panY = frozenPan.y; return; }
-    panX = tilt.x * W * 0.17;
-    panY = tilt.y * H * 0.09;
+
+    if (isFrozen) { camX = frozenCam.x; camY = frozenCam.y; return; }
+    if (!oriRef) { camX = 0; camY = 0; return; }
+    var p = pxPerDeg();
+    camX = (ori.x - oriRef.x) * p;
+    camY = (ori.y - oriRef.y) * p;
   }
+
+  // call when the worms are placed — "here is where the belly is"
+  function resetOrientationRef() { oriRef = { x: ori.x, y: ori.y }; camX = 0; camY = 0; }
+
+  // screen position <-> belly ("world") position
+  function toWorld(sx, sy) { return { x: sx + camX, y: sy + camY }; }
 
   function setFrozen(on) {
     if (on) {
@@ -477,7 +521,7 @@
       frozenFrame.width = vw; frozenFrame.height = vh;
       frozenFrame.getContext("2d").drawImage(video, 0, 0, vw, vh);
       isFrozen = true;
-      frozenPan.x = panX; frozenPan.y = panY;   // lock the parallax too
+      frozenCam.x = camX; frozenCam.y = camY;   // lock the anchoring too
       torchBeforeFreeze = torchOn;
       setTorch(false);
       setStatus("Picture held ❄️ — take the phone off and show them!");
@@ -582,9 +626,12 @@
   // ------------------------------------------------------------------
   function coneParams(w, h) {
     return {
-      ax: w / 2, ay: -h * 0.03,
-      a0: Math.PI / 2 - 0.70, a1: Math.PI / 2 + 0.70,
-      rIn: h * 0.11, rOut: h * 1.40
+      // ~62 degrees each side of straight down: a wide, shallow fan.
+      // rOut stops short of the bottom so the curved lower edge stays visible —
+      // without it the shape just reads as a rectangle with clipped corners.
+      ax: w / 2, ay: -h * 0.09,
+      a0: Math.PI / 2 - 1.00, a1: Math.PI / 2 + 1.00,
+      rIn: h * 0.17, rOut: h * 0.95
     };
   }
 
@@ -615,8 +662,13 @@
   // ------------------------------------------------------------------
   function Worm(x, y) {
     var sp = spawnPoint();
-    this.x = x != null ? x : sp.x;
-    this.y = y != null ? y : sp.y;
+    // positions are in belly ("world") space, not screen space
+    var p = toWorld(x != null ? x : sp.x, y != null ? y : sp.y);
+    this.x = p.x;
+    this.y = p.y;
+    this.homeX = p.x;          // the spot on the belly it belongs to
+    this.homeY = p.y;
+    this.roam = rand(26, 46);  // how far it will stray from that spot
     this.dir = rand(0, Math.PI * 2);
     this.speed = rand(16, 40);
     this.nSeg = randInt(12, 18);
@@ -646,20 +698,30 @@
     // wander: sine wiggle + gentle random steering
     this.dir += Math.sin(t * this.wig + this.phase) * dt * 2.4 + rand(-0.6, 0.6) * dt;
 
-    // keep them inside the ultrasound fan — bounce off the edge of the beam
+    // stay around the spot it was pinned to
+    if (!this.dying) {
+      var hx = this.homeX - this.x, hy = this.homeY - this.y;
+      var hd = Math.sqrt(hx * hx + hy * hy);
+      if (hd > this.roam) {
+        var toHome = Math.atan2(hy, hx);
+        var dh = Math.atan2(Math.sin(toHome - this.dir), Math.cos(toHome - this.dir));
+        var pull = Math.min(1, (hd - this.roam) / 50);
+        this.dir += clamp(dh, -1.2, 1.2) * pull * dt * 7;
+        if (hd > this.roam * 3) this.dir = toHome;   // yanked far away: head straight back
+      }
+    }
+
     var nx = this.x + Math.cos(this.dir) * this.speed * dt;
     var ny = this.y + Math.sin(this.dir) * this.speed * dt;
-    if (this.dying || insideCone(nx, ny, this.thick * 2.2)) {
+
+    // the beam lives in screen space, so test there
+    if (this.dying || insideCone(nx - camX, ny - camY, this.thick * 2.2)) {
       this.x = nx; this.y = ny;
     } else {
-      // turn back toward the middle of the beam
-      var k = coneParams(W, H);
-      var toMid = Math.atan2(H * 0.55 - this.y, W / 2 - this.x);
-      var diff = Math.atan2(Math.sin(toMid - this.dir), Math.cos(toMid - this.dir));
-      this.dir += clamp(diff, -1, 1) * 0.55 + rand(-0.2, 0.2);
+      var toMid = Math.atan2((H * 0.5 + camY) - this.y, (W / 2 + camX) - this.x);
+      var dm = Math.atan2(Math.sin(toMid - this.dir), Math.cos(toMid - this.dir));
+      this.dir += clamp(dm, -1, 1) * 0.55 + rand(-0.2, 0.2);
     }
-    this.x = clamp(this.x, 8, Math.max(9, W - 8));
-    this.y = clamp(this.y, 8, Math.max(9, H - 8));
 
     // body follows the head with fixed segment spacing
     var px = this.x, py = this.y;
@@ -985,11 +1047,13 @@
       // extra zoom leaves room to pan the image as the phone tilts.
       // canvas blur is the most expensive bit, so it's dropped on slow phones
       // and only used at all when the probe is actually moving.
+      // The feed is NOT panned. It's a live camera — it already moves when the
+      // phone moves. Faking a shift on top of that fights the real image.
       var base = "grayscale(1) contrast(1.5) brightness(0.82)";
       var blur = lowQ ? 0 : 0.4 + motionMag * 1.6;
       c.filter = blur > 0.05 ? base + " blur(" + blur.toFixed(2) + "px)" : base;
-      if (isFrozen && frozenFrame) drawCover(c, frozenFrame, frozenFrame.width, frozenFrame.height, w, h, panX, panY, 1.2);
-      else if (video.videoWidth) drawCover(c, video, video.videoWidth, video.videoHeight, w, h, panX, panY, 1.2);
+      if (isFrozen && frozenFrame) drawCover(c, frozenFrame, frozenFrame.width, frozenFrame.height, w, h);
+      else if (video.videoWidth) drawCover(c, video, video.videoWidth, video.videoHeight, w, h);
       c.filter = "none";
     } catch (e) { c.filter = "none"; }
     c.restore();
@@ -1037,41 +1101,67 @@
 
   function drawChrome(c, w, h, t) {
     c.save();
-    c.font = "600 11px ui-monospace, Menlo, Consolas, monospace";
-    c.textBaseline = "top";
-    c.fillStyle = "rgba(215,230,255,0.72)";
-    c.fillText("TUMMY-3000   C5-2 ABDOMEN", 12, 10);
+    var mono = "ui-monospace, Menlo, Consolas, monospace";
 
-    var deg = Math.round(tilt.x * 40);
-    var lines = [
-      "Gain  42",
-      "Depth 12.5cm",
-      "Frq   3.5MHz",
-      "Probe " + (deg > 0 ? "+" : "") + deg + "°",
-      motionMag > 0.18 ? "** MOVING **" : "TIS   0.3"
-    ];
+    // ---- header bar: sits just above the probe face, so text is never on tissue
+    var hb = 54;
+    c.fillStyle = "#04060a";
+    c.fillRect(0, 0, w, hb);
+    c.font = "600 11px " + mono;
+    c.textBaseline = "top";
+    c.fillStyle = "rgba(215,230,255,0.85)";
+    c.fillText("TUMMY-3000", 12, 9);
+    c.fillStyle = "rgba(215,230,255,0.55)";
+    c.fillText("C5-2 ABDOMEN", 12, 27);
+
     c.textAlign = "right";
-    for (var i = 0; i < lines.length; i++) c.fillText(lines[i], w - 12, 10 + i * 15);
+    c.fillStyle = "rgba(215,230,255,0.85)";
+    c.fillText("Gain 42", w - 12, 9);
+    c.fillStyle = "rgba(215,230,255,0.55)";
+    c.fillText("3.5MHz  D 12.5cm", w - 12, 27);
     c.textAlign = "left";
 
-    // depth ruler down the left edge
-    c.strokeStyle = "rgba(215,230,255,0.5)";
+    // ---- footer strip in the black below the fan
+    var fy = h - 30;
+    c.fillStyle = "#04060a";
+    c.fillRect(0, fy - 6, w, h - fy + 6);
+    var deg = Math.round(oriRef ? (ori.x - oriRef.x) : ori.x);
+    c.font = "600 11px " + mono;
     c.fillStyle = "rgba(215,230,255,0.6)";
+    c.fillText("MI 0.7   TIS 0.3   Probe " + (deg > 0 ? "+" : "") + deg + "°", 12, fy);
+
+    c.textAlign = "right";
+    if (motionMag > 0.18) {
+      c.fillStyle = "rgba(255,205,120,0.95)";
+      c.fillText("** MOVING **", w - 28, fy);
+    } else {
+      c.fillStyle = "rgba(215,230,255,0.6)";
+      c.fillText("LIVE", w - 28, fy);
+    }
+    c.textAlign = "left";
+    if (Math.sin(t * 4) > 0) {
+      c.fillStyle = "rgba(120,255,170,0.9)";
+      c.beginPath(); c.arc(w - 14, fy + 5, 4.5, 0, 6.2832); c.fill();
+    }
+
+    // ---- depth ruler, on its own dimmed strip so the numbers stay legible
+    var top = hb + 8, bot = h * 0.86;
+    var g = c.createLinearGradient(0, 0, 44, 0);
+    g.addColorStop(0, "rgba(4,6,10,0.62)");
+    g.addColorStop(1, "rgba(4,6,10,0)");
+    c.fillStyle = g;
+    c.fillRect(0, hb, 44, bot - hb + 14);
+
+    c.strokeStyle = "rgba(215,230,255,0.55)";
+    c.fillStyle = "rgba(215,230,255,0.7)";
     c.lineWidth = 1;
-    c.font = "600 9px ui-monospace, Menlo, Consolas, monospace";
-    var top = h * 0.14, bot = h * 0.94;
-    c.beginPath(); c.moveTo(16, top); c.lineTo(16, bot); c.stroke();
+    c.font = "600 9px " + mono;
+    c.beginPath(); c.moveTo(15, top); c.lineTo(15, bot); c.stroke();
     for (var d = 0; d <= 10; d++) {
       var yy = top + (bot - top) * (d / 10);
       var major = d % 2 === 0;
-      c.beginPath(); c.moveTo(16, yy); c.lineTo(16 + (major ? 9 : 5), yy); c.stroke();
-      if (major && d > 0) c.fillText(String(d), 28, yy - 4);
-    }
-
-    // blinking live indicator
-    if (Math.sin(t * 4) > 0) {
-      c.fillStyle = "rgba(120,255,170,0.9)";
-      c.beginPath(); c.arc(w - 16, h - 16, 4.5, 0, 6.2832); c.fill();
+      c.beginPath(); c.moveTo(15, yy); c.lineTo(15 + (major ? 9 : 5), yy); c.stroke();
+      if (major && d > 0 && d < 10) c.fillText(String(d), 27, yy - 4);
     }
     c.restore();
   }
@@ -1111,8 +1201,8 @@
     if (opts.worms && worms.length) {
       c.save();
       conePath(c, w, h, false); c.clip();
-      // worms slide with the tissue, slightly less than the surface — reads as depth
-      c.translate(panX * 0.82, panY * 0.82);
+      // worms hold their spot on the belly: shift them opposite to the view
+      c.translate(-camX, -camY);
       for (var i = worms.length - 1; i >= 0; i--) worms[i].draw(c, t);
       c.restore();
     }
@@ -1177,6 +1267,8 @@
     if (MODE !== "scanning") return;
     MODE = "play";
     $("revealWrap").classList.add("hidden");
+    // "the belly is here" — worms are pinned relative to this orientation
+    resetOrientationRef();
     worms = [];
     var n = wormTarget();
     for (var i = 0; i < n; i++) worms.push(new Worm());
@@ -1237,6 +1329,7 @@
       updateCount();
       setStatus(SCAN_LINES[0]);
       setTorch(true);
+      applyFocus(0.5, 0.5);
       startNoise();
       keepAwake(true);
       buzz(50);
@@ -1310,23 +1403,44 @@
     setTorch(!torchOn);
   });
 
-  // tapping a worm pokes it (fun, doesn't remove it — food does that)
+  // Tap the belly to pin the nearest worm to that spot, and point the camera's
+  // focus there at the same time.
   canvas.addEventListener("pointerdown", function (ev) {
-    if (MODE !== "play") return;
+    if (MODE !== "play" && MODE !== "scanning") return;
     var r = canvas.getBoundingClientRect();
-    // undo the motion parallax so taps land on where the worm actually looks
-    var x = ev.clientX - r.left - panX * 0.82, y = ev.clientY - r.top - panY * 0.82;
+    var sx = ev.clientX - r.left, sy = ev.clientY - r.top;
+
+    var vw = r.width || canvas.clientWidth || W || 1;
+    var vh = r.height || canvas.clientHeight || H || 1;
+    applyFocus(sx / vw, sy / vh);
+
+    if (MODE !== "play" || !worms.length) {
+      setStatus("Focusing there 🎯");
+      buzz(15);
+      return;
+    }
+    if (!insideCone(sx, sy, 40)) {
+      setStatus("Tap inside the scan area 🎯");
+      return;
+    }
+
+    // nearest worm, measured on screen where the finger actually is
+    var target = null, best = 1e9;
     for (var i = 0; i < worms.length; i++) {
       var w = worms[i];
-      if (Math.hypot(w.x - x, w.y - y) < w.thick * 3.2 && !w.dying) {
-        w.dir += rand(2, 4);
-        w.speed = Math.min(90, w.speed * 1.6);
-        burst(w.x, w.y, "#dfe9f5", 6);
-        setStatus("It wriggled! Poking won't move it — food will 🍎");
-        buzz(20);
-        return;
-      }
+      if (w.dying) continue;
+      var d = Math.hypot((w.x - camX) - sx, (w.y - camY) - sy);
+      if (d < best) { best = d; target = w; }
     }
+    if (!target) return;
+
+    var p = toWorld(sx, sy);
+    target.homeX = p.x; target.homeY = p.y;
+    burst(sx, sy, "#dfe9f5", 8);
+    buzz(25);
+    setStatus(best < target.thick * 3.5
+      ? "Pinned 📍 it'll stay on that spot"
+      : "Come here! 📍 heading to that spot");
   });
 
   document.addEventListener("visibilitychange", function () {
