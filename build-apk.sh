@@ -15,21 +15,10 @@ set -euo pipefail
 
 INSTALL=0; CLEAN=0; RELEASE=0; BUNDLE=0; ACCEPT_LICENSES=0
 
-# Settings live in build.conf next to this script. Existing environment variables
-# win, so nothing here is baked in.
 _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "$_SELF_DIR/build.conf" ]; then
-  _keep_id="${APP_ID:-}"; _keep_name="${APP_NAME:-}"; _keep_sdk="${TARGET_SDK:-}"
-  # shellcheck source=build.conf
-  . "$_SELF_DIR/build.conf"
-  [ -n "$_keep_id" ]   && APP_ID="$_keep_id"
-  [ -n "$_keep_name" ] && APP_NAME="$_keep_name"
-  [ -n "$_keep_sdk" ]  && TARGET_SDK="$_keep_sdk"
-fi
-APP_ID="${APP_ID:-com.example.app}"
-APP_NAME="${APP_NAME:-App}"
-APP_SLUG="${APP_SLUG:-app}"
-TARGET_SDK="${TARGET_SDK:-36}"
+# shellcheck source=build-lib.sh
+. "$_SELF_DIR/build-lib.sh"
+load_build_conf "$_SELF_DIR"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -51,32 +40,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJ="$ROOT/android-build"
 AND="$PROJ/android"
 
-# On Git Bash / MSYS / Cygwin the shell speaks POSIX paths but Java, Gradle and adb
-# are Windows-native and reject them. Everything handed to those tools has to be
-# converted to C:/style/paths first.
-WINHOST=0
-case "$(uname -s 2>/dev/null || echo unknown)" in
-  MINGW*|MSYS*|CYGWIN*) WINHOST=1 ;;
-esac
-
-# POSIX path -> native path (forward slashes, which Gradle accepts on Windows and
-# which need no escaping in a .properties file)
-native_path() {
-  if [ "$WINHOST" = "1" ] && command -v cygpath >/dev/null 2>&1; then
-    cygpath -m "$1" 2>/dev/null || printf '%s' "$1"
-  else
-    printf '%s' "$1"
-  fi
-}
-
-# native path -> POSIX, so the shell can test/cd into it
-posix_path() {
-  if [ "$WINHOST" = "1" ] && command -v cygpath >/dev/null 2>&1; then
-    cygpath -u "$1" 2>/dev/null || printf '%s' "$1"
-  else
-    printf '%s' "$1"
-  fi
-}
+# WINHOST, native_path and posix_path come from build-lib.sh: on Git Bash the shell
+# speaks POSIX paths but Java, Gradle and adb are Windows-native and reject them.
 
 cyan()  { printf '\n\033[36m==> %s\033[0m\n' "$1"; }
 info()  { printf '    \033[90m%s\033[0m\n' "$1"; }
@@ -120,30 +85,27 @@ fi
     downloads the SDK, then re-run. Or set ANDROID_HOME to an existing SDK folder."
 info "SDK  $SDK"
 
-# --- JDK: Android Studio bundles one ---
-JAVA_DIR="$(posix_path "${JAVA_HOME:-}")"
-if [ -z "$JAVA_DIR" ] || [ ! -d "$JAVA_DIR/bin" ]; then
-  JAVA_DIR=""
-  for guess in \
-    "$(posix_path "${ProgramFiles:-}")/Android/Android Studio/jbr" \
-    "$(posix_path "${ProgramFiles:-}")/Android/Android Studio/jre" \
-    "$(posix_path "${LOCALAPPDATA:-}")/Programs/Android Studio/jbr" \
-    "$HOME/android-studio/jbr" \
-    "/opt/android-studio/jbr" \
-    "/usr/local/android-studio/jbr" \
-    "/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-  do
-    [ -n "$guess" ] && [ -d "$guess/bin" ] && { JAVA_DIR="$guess"; break; }
-  done
-fi
+# --- JDK: Android Studio bundles one, wherever it happens to be installed ---
+detect_java || true
+JAVA_DIR="$JAVA_FOUND"
 if [ -n "$JAVA_DIR" ] && [ -d "$JAVA_DIR/bin" ]; then
   # Gradle and the JVM launcher need this in native form, not /c/...
   export JAVA_HOME="$(native_path "$JAVA_DIR")"
-  info "JDK  $JAVA_HOME"
+  info "JDK  $JAVA_HOME (Java $(java_major "$JAVA_DIR" 2>/dev/null || echo '?'))"
+  if [ -n "$JAVA_REJECTED" ]; then
+    info "skipped $JAVA_REJECTED - outside the Java $JAVA_MIN-$JAVA_MAX range Gradle supports"
+  fi
 else
-  command -v java >/dev/null 2>&1 || die "No JDK found. Install Android Studio (it bundles one) or JDK 17, then set JAVA_HOME."
-  unset JAVA_HOME 2>/dev/null || true
-  warn "JAVA_HOME unset; falling back to java on PATH"
+  msg="No usable JDK found. Gradle needs Java $JAVA_MIN to $JAVA_MAX."
+  if [ -n "$JAVA_REJECTED" ]; then
+    msg="$msg
+    Ignored $JAVA_REJECTED - too new for Gradle, which fails on it with
+    'Unsupported class file major version'."
+  fi
+  die "$msg
+    Install JDK 17 or 21 (Android Studio bundles one), then set JAVA_HOME,
+    or put the path in build.local.conf next to this script:
+      JAVA_HOME=/path/to/Android Studio/jbr"
 fi
 
 # --- SDK packages and licences ---

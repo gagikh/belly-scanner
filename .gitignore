@@ -11,3 +11,6 @@ android-build/
 keystore.properties
 
 node_modules/
+
+# Machine-specific overrides (JDK/SDK paths) — never committed
+build.local.conf

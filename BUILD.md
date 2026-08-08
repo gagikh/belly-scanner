@@ -46,8 +46,22 @@ APP_NAME="Belly Scanner" APP_ID=com.yourname.belly ./build-debug.sh
 ```
 
 No absolute path is written down anywhere. Locations are resolved relative to the
-scripts, or discovered from `ANDROID_HOME` / `JAVA_HOME` (falling back to the standard
-Android Studio install locations for your OS).
+scripts, or discovered from `ANDROID_HOME` / `JAVA_HOME`.
+
+**If the JDK isn't found** — for instance Android Studio installed on a drive other than
+`C:` — the scripts scan every drive letter for `Program Files/Android/Android Studio`
+before giving up, so it usually just works. If it still doesn't, create
+**`build.local.conf`** beside the scripts (gitignored, so machine paths never get
+committed):
+
+```bash
+JAVA_HOME="T:/Program Files/Android/Android Studio/jbr"
+KEYTOOL="T:/Program Files/Android/Android Studio/jbr/bin/keytool.exe"
+ANDROID_HOME="T:/Android/Sdk"
+```
+
+Discovery order for the JDK: `JAVA_HOME` → Android Studio on any drive → `javac` on
+`PATH`. For `keytool`: `KEYTOOL` → the JDK found above → `PATH`.
 
 First run scaffolds the project and downloads Gradle — expect **5–15 minutes**.
 Every run after that is **~20 seconds**, because it only re-copies the HTML and rebuilds.
@@ -170,6 +184,25 @@ adb install -r tummy-scanner-debug.apk
 Also check the file actually transferred completely — a truncated copy produces the same
 message. The APK should be a few megabytes; the script prints the size when it finishes.
 
+### "Unsupported class file major version 69"
+
+Gradle is running on a JDK that's too new — 69 means Java 25 (68 = 24, 67 = 23, 66 = 22,
+65 = 21, 61 = 17). Android tooling wants **Java 17 or 21**.
+
+The script checks this now: it reads the version of every JDK it can find and picks the
+newest one in range, ignoring `JAVA_HOME` if that points at something unusable. It prints
+which one it chose and which it skipped. If nothing suitable exists it stops with a clear
+message instead of letting Gradle fail cryptically.
+
+Android Studio bundles a compatible JDK, so installing it is usually the whole fix. To
+point at one explicitly, use `build.local.conf`:
+
+```bash
+JAVA_HOME="T:/Program Files/Android/Android Studio/jbr"
+```
+
+The accepted range is `JAVA_MIN` / `JAVA_MAX` in `build.conf` if you ever need to widen it.
+
 ### "SDK XML file of version 4 was encountered"
 
 Harmless. Your command-line tools are newer than the Android Gradle Plugin that
@@ -226,12 +259,20 @@ worth keeping in version control; `android-build/` and `*.apk` are gitignored.
 `android-assets/` into the project on every build; the `store/` files are uploaded to
 Play by hand.
 
+It also writes the browser-tab icons into `icons/`, which `index.html` and
+`manifest.webmanifest` reference.
+
 To change the artwork, edit `tools/make-icons.js` and re-run it:
 
 ```bash
 npm i @napi-rs/canvas
 node tools/make-icons.js
 ```
+
+Output is **deterministic**: the speckle uses a seeded generator, reset before each
+drawing, so re-running produces byte-identical files and `git status` stays clean unless
+the artwork genuinely changed. (Change `SEED` in the script if you want a different
+speckle pattern.)
 
 ---
 

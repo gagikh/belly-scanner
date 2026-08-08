@@ -26,13 +26,9 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# Settings come from build.conf beside this script; environment variables win.
-_keep_ks="${KEYSTORE_FILE:-}"; _keep_alias="${KEY_ALIAS:-}"; _keep_dname="${KEY_DNAME:-}"
-# shellcheck source=build.conf
-[ -f build.conf ] && . ./build.conf
-[ -n "$_keep_ks" ]    && KEYSTORE_FILE="$_keep_ks"
-[ -n "$_keep_alias" ] && KEY_ALIAS="$_keep_alias"
-[ -n "$_keep_dname" ] && KEY_DNAME="$_keep_dname"
+# shellcheck source=build-lib.sh
+. ./build-lib.sh
+load_build_conf "$PWD"
 
 KEYSTORE="${KEYSTORE_FILE:-upload.jks}"
 ALIAS="${KEY_ALIAS:-upload}"
@@ -44,15 +40,7 @@ cyan() { printf '\n\033[36m==> %s\033[0m\n' "$1"; }
 info() { printf '    \033[90m%s\033[0m\n' "$1"; }
 warn() { printf '    \033[33m! %s\033[0m\n' "$1"; }
 die()  { printf '\n\033[31m%s\033[0m\n' "$1" >&2; exit 1; }
-
-# Git Bash speaks /c/... but Java reads this path out of a .properties file
-native_path() {
-  case "$(uname -s 2>/dev/null || echo x)" in
-    MINGW*|MSYS*|CYGWIN*)
-      command -v cygpath >/dev/null 2>&1 && cygpath -m "$1" || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
+# native_path, posix_path and find_keytool come from build-lib.sh
 
 random_password() {
   if command -v openssl >/dev/null 2>&1; then openssl rand -base64 24 | tr -d '\n/+=' | cut -c1-24
@@ -61,30 +49,16 @@ random_password() {
   fi
 }
 
-find_keytool() {
-  if [ -n "${JAVA_HOME:-}" ]; then
-    for k in "$JAVA_HOME/bin/keytool" "$JAVA_HOME/bin/keytool.exe"; do
-      [ -f "$k" ] && { printf '%s' "$k"; return 0; }
-    done
-  fi
-  command -v keytool >/dev/null 2>&1 && { printf 'keytool'; return 0; }
-  # last resort: wherever Android Studio put its bundled JDK
-  for base in "${ProgramFiles:-}/Android/Android Studio" "$HOME/android-studio" \
-              "/opt/android-studio" "/Applications/Android Studio.app/Contents"; do
-    for k in "$base/jbr/bin/keytool" "$base/jbr/bin/keytool.exe" \
-             "$base/jbr/Contents/Home/bin/keytool"; do
-      [ -f "$k" ] && { printf '%s' "$k"; return 0; }
-    done
-  done
-  return 1
-}
-
 # ------------------------------------------------------------ signing setup ---
 if [ ! -f "$PROPS" ]; then
   cyan "Setting up signing (first run only)"
 
-  KEYTOOL="$(find_keytool)" || die \
-"keytool not found. It ships with the JDK - install Android Studio, or set JAVA_HOME."
+  KEYTOOL_BIN="$(find_keytool)" || die \
+"keytool not found. It ships with the JDK.
+    Point at it directly in build.local.conf, e.g.
+      KEYTOOL=\"T:/Program Files/Android/Android Studio/jbr/bin/keytool.exe\"
+    or set JAVA_HOME to the JDK root."
+  info "keytool $KEYTOOL_BIN"
 
   if [ -f "$KEYSTORE" ]; then
     # keystore exists but we have no properties file: we need the password
@@ -100,7 +74,7 @@ if [ ! -f "$PROPS" ]; then
   else
     PASS="${KEYSTORE_PASSWORD:-$(random_password)}"
     info "Creating upload key $KEYSTORE (valid ~27 years)"
-    "$KEYTOOL" -genkeypair \
+    "$KEYTOOL_BIN" -genkeypair \
       -keystore "$KEYSTORE" -alias "$ALIAS" \
       -keyalg RSA -keysize 2048 -validity 10000 \
       -storepass "$PASS" -keypass "$PASS" \

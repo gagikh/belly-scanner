@@ -16,6 +16,23 @@ const OUT = path.join(__dirname, "..", "android-assets");
 const NAVY = "#0b1220";
 const NAVY_LIT = "#17304d";
 
+// The speckle needs randomness to look like ultrasound, but Math.random() would
+// make every run emit byte-different PNGs — 17 binary files churning in git each
+// time the script runs, for artwork that hasn't changed. A seeded generator,
+// reset before each drawing, makes the output reproducible: re-running produces
+// identical bytes and `git status` stays clean unless the art actually changed.
+const SEED = 0x7ea5e;
+let _rngState = SEED;
+function resetRandom() { _rngState = SEED; }
+function rnd() {
+  // mulberry32
+  _rngState = (_rngState + 0x6D2B79F5) | 0;
+  let t = _rngState;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
 // ---------------------------------------------------------------- artwork ---
 
 // The ultrasound fan, drawn into a unit box: x,y in 0..1 of the given size.
@@ -45,7 +62,7 @@ function drawFan(c, S, alpha) {
   const step = Math.max(2, Math.round(S / 90));
   for (let y = 0; y < S; y += step) {
     for (let x = 0; x < S; x += step) {
-      if (Math.random() > 0.55) c.fillRect(x, y, step, step);
+      if (rnd() > 0.55) c.fillRect(x, y, step, step);
     }
   }
   c.globalAlpha = 1;
@@ -100,6 +117,7 @@ function drawWorm(c, cx, cy, len, thick) {
 
 // full-bleed square icon
 function iconSquare(S) {
+  resetRandom();               // same seed per drawing, so output never drifts
   const cv = createCanvas(S, S);
   const c = cv.getContext("2d");
   const g = c.createRadialGradient(S * 0.5, S * 0.34, 0, S * 0.5, S * 0.34, S * 0.8);
@@ -125,6 +143,7 @@ function iconRound(S) {
 
 // adaptive foreground: transparent, art inside the 66% safe circle
 function iconForeground(S) {
+  resetRandom();
   const cv = createCanvas(S, S);
   const c = cv.getContext("2d");
   const inner = S * 0.62;
@@ -139,6 +158,7 @@ function iconForeground(S) {
 
 // 1024x500 Play Store feature graphic
 function featureGraphic() {
+  resetRandom();
   const W = 1024, H = 500;
   const cv = createCanvas(W, H);
   const c = cv.getContext("2d");
@@ -181,6 +201,7 @@ function write(file, cv) {
 }
 
 fs.rmSync(OUT, { recursive: true, force: true });
+fs.mkdirSync(path.join(__dirname, "..", "icons"), { recursive: true });
 console.log("writing icons to android-assets/");
 
 for (const [name, size, fgSize] of DENSITIES) {
@@ -205,6 +226,14 @@ for (const n of ["ic_launcher", "ic_launcher_round"]) {
     '    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>\n' +
     '</adaptive-icon>\n');
 }
+
+// browser tab icon, written next to index.html so the page can reference it
+const web = path.join(__dirname, "..");
+for (const size of [16, 32, 180, 192, 512]) {
+  const name = size === 180 ? "apple-touch-icon.png" : `favicon-${size}.png`;
+  fs.writeFileSync(path.join(web, "icons", name), iconSquare(size).toBuffer("image/png"));
+}
+console.log("\nicons/favicon-*.png and apple-touch-icon.png written");
 
 // store listing art (not copied into the project; upload these by hand)
 const store = path.join(OUT, "..", "store");

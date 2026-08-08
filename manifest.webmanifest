@@ -1,0 +1,16 @@
+{
+  "name": "Tummy Scanner 3000",
+  "short_name": "Tummy Scanner",
+  "description": "A pretend ultrasound that shows kids what sugary food does to their tummy.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "icons": [
+    { "src": "icons/favicon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/favicon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/favicon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
