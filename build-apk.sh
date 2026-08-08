@@ -9,18 +9,33 @@
 #   ./build-apk.sh --clean      throw away the generated project and start over
 #   ./build-apk.sh --release    unsigned release APK (sign it before Play)
 #   ./build-apk.sh --bundle     release AAB for the Play Store
+#   ./build-apk.sh --accept-licenses   accept the Android SDK licences, then build
 #
 set -euo pipefail
 
-INSTALL=0; CLEAN=0; RELEASE=0; BUNDLE=0
-APP_ID="com.tummyscanner.app"
-APP_NAME="Tummy Scanner"
-TARGET_SDK=36
+INSTALL=0; CLEAN=0; RELEASE=0; BUNDLE=0; ACCEPT_LICENSES=0
+
+# Settings live in build.conf next to this script. Existing environment variables
+# win, so nothing here is baked in.
+_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$_SELF_DIR/build.conf" ]; then
+  _keep_id="${APP_ID:-}"; _keep_name="${APP_NAME:-}"; _keep_sdk="${TARGET_SDK:-}"
+  # shellcheck source=build.conf
+  . "$_SELF_DIR/build.conf"
+  [ -n "$_keep_id" ]   && APP_ID="$_keep_id"
+  [ -n "$_keep_name" ] && APP_NAME="$_keep_name"
+  [ -n "$_keep_sdk" ]  && TARGET_SDK="$_keep_sdk"
+fi
+APP_ID="${APP_ID:-com.example.app}"
+APP_NAME="${APP_NAME:-App}"
+APP_SLUG="${APP_SLUG:-app}"
+TARGET_SDK="${TARGET_SDK:-36}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --install)     INSTALL=1 ;;
     --clean)       CLEAN=1 ;;
+    --accept-licenses) ACCEPT_LICENSES=1 ;;
     --release)     RELEASE=1 ;;
     --bundle)      BUNDLE=1; RELEASE=1 ;;
     --app-id)      APP_ID="$2"; shift ;;
@@ -35,6 +50,33 @@ done
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJ="$ROOT/android-build"
 AND="$PROJ/android"
+
+# On Git Bash / MSYS / Cygwin the shell speaks POSIX paths but Java, Gradle and adb
+# are Windows-native and reject them. Everything handed to those tools has to be
+# converted to C:/style/paths first.
+WINHOST=0
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  MINGW*|MSYS*|CYGWIN*) WINHOST=1 ;;
+esac
+
+# POSIX path -> native path (forward slashes, which Gradle accepts on Windows and
+# which need no escaping in a .properties file)
+native_path() {
+  if [ "$WINHOST" = "1" ] && command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$1" 2>/dev/null || printf '%s' "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+# native path -> POSIX, so the shell can test/cd into it
+posix_path() {
+  if [ "$WINHOST" = "1" ] && command -v cygpath >/dev/null 2>&1; then
+    cygpath -u "$1" 2>/dev/null || printf '%s' "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
 
 cyan()  { printf '\n\033[36m==> %s\033[0m\n' "$1"; }
 info()  { printf '    \033[90m%s\033[0m\n' "$1"; }
@@ -59,10 +101,17 @@ NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 info "node $(node -v)"
 
 # --- Android SDK ---
-SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-if [ -z "$SDK" ]; then
-  for guess in "$HOME/Android/Sdk" "$HOME/Library/Android/sdk" "$LOCALAPPDATA/Android/Sdk"; do
-    [ -d "$guess" ] && { SDK="$guess"; break; }
+# env vars may already hold Windows paths; normalise to POSIX for shell use
+SDK="$(posix_path "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}")"
+if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
+  SDK=""
+  for guess in \
+    "$HOME/Android/Sdk" \
+    "$HOME/Library/Android/sdk" \
+    "$(posix_path "${LOCALAPPDATA:-}")/Android/Sdk" \
+    "$HOME/AppData/Local/Android/Sdk"
+  do
+    [ -n "$guess" ] && [ -d "$guess" ] && { SDK="$guess"; break; }
   done
 fi
 [ -n "$SDK" ] && [ -d "$SDK" ] || die \
@@ -72,23 +121,69 @@ fi
 info "SDK  $SDK"
 
 # --- JDK: Android Studio bundles one ---
-if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME:-}/bin/java" ]; then
+JAVA_DIR="$(posix_path "${JAVA_HOME:-}")"
+if [ -z "$JAVA_DIR" ] || [ ! -d "$JAVA_DIR/bin" ]; then
+  JAVA_DIR=""
   for guess in \
+    "$(posix_path "${ProgramFiles:-}")/Android/Android Studio/jbr" \
+    "$(posix_path "${ProgramFiles:-}")/Android/Android Studio/jre" \
+    "$(posix_path "${LOCALAPPDATA:-}")/Programs/Android Studio/jbr" \
+    "$HOME/android-studio/jbr" \
     "/opt/android-studio/jbr" \
     "/usr/local/android-studio/jbr" \
-    "/Applications/Android Studio.app/Contents/jbr/Contents/Home" \
-    "$HOME/android-studio/jbr" \
-    "/c/Program Files/Android/Android Studio/jbr" \
-    "/usr/lib/jvm/java-17-openjdk-amd64"
+    "/Applications/Android Studio.app/Contents/jbr/Contents/Home"
   do
-    [ -x "$guess/bin/java" ] && { export JAVA_HOME="$guess"; break; }
+    [ -n "$guess" ] && [ -d "$guess/bin" ] && { JAVA_DIR="$guess"; break; }
   done
 fi
-if [ -z "${JAVA_HOME:-}" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
-  command -v java >/dev/null 2>&1 || die "No JDK found. Install Android Studio (it bundles one) or JDK 17, then set JAVA_HOME."
-  warn "JAVA_HOME unset; falling back to java on PATH"
-else
+if [ -n "$JAVA_DIR" ] && [ -d "$JAVA_DIR/bin" ]; then
+  # Gradle and the JVM launcher need this in native form, not /c/...
+  export JAVA_HOME="$(native_path "$JAVA_DIR")"
   info "JDK  $JAVA_HOME"
+else
+  command -v java >/dev/null 2>&1 || die "No JDK found. Install Android Studio (it bundles one) or JDK 17, then set JAVA_HOME."
+  unset JAVA_HOME 2>/dev/null || true
+  warn "JAVA_HOME unset; falling back to java on PATH"
+fi
+
+# --- SDK packages and licences ---
+# Gradle downloads whatever platform/build-tools it needs, but it refuses to do so
+# until the SDK licences have been accepted, and the error it gives is unhelpful.
+find_sdkmanager() {
+  for p in \
+    "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+    "$SDK/cmdline-tools/bin/sdkmanager" \
+    "$SDK/tools/bin/sdkmanager"
+  do
+    [ -f "$p" ]     && { printf '%s' "$p"; return 0; }
+    [ -f "$p.bat" ] && { printf '%s' "$p.bat"; return 0; }
+  done
+  return 1
+}
+
+run_sdkmanager() {
+  local sm; sm="$(find_sdkmanager)" || return 1
+  case "$sm" in
+    *.bat) ( cd "$(dirname "$sm")" && cmd //c "$(basename "$sm")" "$@" ) ;;
+    *)     "$sm" "$@" ;;
+  esac
+}
+
+if [ "$ACCEPT_LICENSES" = "1" ]; then
+  cyan "Accepting Android SDK licences"
+  if find_sdkmanager >/dev/null; then
+    yes 2>/dev/null | run_sdkmanager --licenses || true
+  else
+    die "sdkmanager not found. In Android Studio: Settings > Languages & Frameworks >
+    Android SDK > SDK Tools, tick 'Android SDK Command-line Tools', then re-run."
+  fi
+fi
+
+if [ ! -d "$SDK/licenses" ] || [ -z "$(ls -A "$SDK/licenses" 2>/dev/null)" ]; then
+  warn "No accepted SDK licences found - the build will stall. Run: ./build-apk.sh --accept-licenses"
+fi
+if [ ! -d "$SDK/platforms/android-$TARGET_SDK" ]; then
+  warn "SDK platform android-$TARGET_SDK is not installed; Gradle will download it (needs licences)."
 fi
 
 # ------------------------------------------------------------------- clean ---
@@ -210,7 +305,49 @@ if [ -f "$STRINGS" ]; then
   ' "$STRINGS" "$APP_NAME"
 fi
 
-printf 'sdk.dir=%s\n' "$SDK" > "$AND/local.properties"
+# Gradle reads this as a Java .properties file: backslashes would be escapes, so we
+# write the native path with forward slashes (C:/Users/... works fine on Windows).
+printf 'sdk.dir=%s\n' "$(native_path "$SDK")" > "$AND/local.properties"
+info "sdk.dir=$(native_path "$SDK")"
+
+# --- release signing --------------------------------------------------------
+# If keystore.properties sits next to this script, wire signing in automatically.
+# Doing it here rather than by hand matters because --clean regenerates
+# app/build.gradle, which would silently throw away a manual edit.
+if [ -f "$ROOT/keystore.properties" ]; then
+  cyan "Configuring release signing"
+  cp -f "$ROOT/keystore.properties" "$AND/keystore.properties"
+  node -e '
+  const fs = require("fs");
+  const p = process.argv[1];
+  let g = fs.readFileSync(p, "utf8");
+  if (g.includes("// generated-signing-config")) { console.log("    \x1b[90malready configured\x1b[0m"); process.exit(0); }
+  const block = `
+    // generated-signing-config
+    signingConfigs {
+        release {
+            def kp = new Properties()
+            def kf = rootProject.file("keystore.properties")
+            if (kf.exists()) { kp.load(new FileInputStream(kf)) }
+            storeFile file(kp["storeFile"])
+            storePassword kp["storePassword"]
+            keyAlias kp["keyAlias"]
+            keyPassword kp["keyPassword"]
+        }
+    }
+`;
+  if (!/android\s*\{/.test(g)) { console.error("    ! could not find the android block in build.gradle"); process.exit(1); }
+  g = g.replace(/android\s*\{/, m => m + block);
+  const before = g;
+  g = g.replace(/(buildTypes\s*\{[\s\S]*?release\s*\{)/, "$1\n            signingConfig signingConfigs.release");
+  if (g === before) { console.error("    ! no buildTypes.release block to attach the signing config to"); process.exit(1); }
+  fs.writeFileSync(p, g);
+  console.log("    \x1b[90msigning wired into app/build.gradle\x1b[0m");
+  ' "$AND/app/build.gradle"
+elif [ "$RELEASE" = "1" ]; then
+  warn "No keystore.properties found - this release build will be UNSIGNED and will not install."
+  warn "See BUILD.md, or just use the debug build for testing."
+fi
 
 # -------------------------------------------------------------------- sync ---
 cyan "Syncing web assets into the Android project"
@@ -222,28 +359,56 @@ elif [ "$RELEASE" = "1" ]; then TASK="assembleRelease"; VARIANT="release"; EXT="
 else TASK="assembleDebug"; VARIANT="debug"; EXT="apk"; OUTDIR="apk/debug"; fi
 
 cyan "Running gradle $TASK (the first build downloads a lot; later ones are fast)"
-chmod +x "$AND/gradlew" 2>/dev/null || true
-"$AND/gradlew" -p "$AND" "$TASK" --console=plain
+if [ "$WINHOST" = "1" ]; then
+  # Use the Windows wrapper: the POSIX gradlew launches a native JVM that then gets
+  # handed /c/... paths it cannot resolve.
+  ( cd "$AND" && cmd //c gradlew.bat "$TASK" --console=plain )
+else
+  chmod +x "$AND/gradlew" 2>/dev/null || true
+  "$AND/gradlew" -p "$AND" "$TASK" --console=plain
+fi
 
 # -------------------------------------------------------------------- copy ---
 ARTIFACT="$(find "$AND/app/build/outputs/$OUTDIR" -name "*.$EXT" -type f 2>/dev/null | head -n1)"
 [ -n "$ARTIFACT" ] || die "Build reported success but no .$EXT was produced."
 
-DEST="$ROOT/tummy-scanner-$VARIANT.$EXT"
+DEST="$ROOT/$APP_SLUG-$VARIANT.$EXT"
 cp -f "$ARTIFACT" "$DEST"
+
+# --- verify it's actually installable ---------------------------------------
+# An unsigned APK installs with the useless message "App not installed as package
+# appears to be invalid", so check here where we can say something useful.
+if [ "$EXT" = "apk" ]; then
+  APKSIGNER=""
+  for cand in "$SDK"/build-tools/*/apksigner "$SDK"/build-tools/*/apksigner.bat; do
+    [ -f "$cand" ] && APKSIGNER="$cand"
+  done
+  if [ -n "$APKSIGNER" ]; then
+    case "$APKSIGNER" in
+      *.bat) SIGN_OK=$( ( cd "$(dirname "$APKSIGNER")" && cmd //c apksigner.bat verify "$(native_path "$DEST")" >/dev/null 2>&1 ) && echo yes || echo no ) ;;
+      *)     SIGN_OK=$( "$APKSIGNER" verify "$DEST" >/dev/null 2>&1 && echo yes || echo no ) ;;
+    esac
+    if [ "$SIGN_OK" = "yes" ]; then
+      info "signature OK"
+    else
+      warn "This APK is NOT SIGNED. Android will refuse it with 'package appears to be invalid'."
+      warn "Use a debug build for testing, or set up signing - see BUILD.md."
+    fi
+  fi
+fi
 
 cyan "Done"
 printf '    \033[32m%s\033[0m\n' "$DEST"
 info "$(du -h "$DEST" | cut -f1)"
-[ "$RELEASE" = "1" ] && warn "This release build is UNSIGNED unless you configured signing - see BUILD.md"
 
 # ----------------------------------------------------------------- install ---
 if [ "$INSTALL" = "1" ]; then
   [ "$EXT" = "apk" ] || die "--install needs an APK; drop --bundle."
   cyan "Installing on the connected phone"
   ADB="$SDK/platform-tools/adb"
+  [ -x "$ADB" ] || ADB="$SDK/platform-tools/adb.exe"
   [ -x "$ADB" ] || ADB="$(command -v adb || true)"
-  [ -n "$ADB" ] || die "adb not found - install 'Android SDK Platform-Tools' via Android Studio."
+  [ -n "$ADB" ] && [ -x "$ADB" ] || die "adb not found - install 'Android SDK Platform-Tools' via Android Studio."
 
   if ! "$ADB" devices | awk 'NR>1 && $2=="device"' | grep -q .; then
     die "No phone detected.

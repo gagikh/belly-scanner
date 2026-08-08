@@ -173,11 +173,12 @@ Nothing leaves the device — saved scans sit in the browser's local storage.
 ## Build an Android APK
 
 ```bash
-./build-apk.sh --install
+./build-debug.sh        # APK for your own phone — no signing to set up
+./build-release.sh      # signed AAB for Play + signed APK; makes the key on first run
 ```
 
-Wraps the HTML in a Capacitor shell, patches the manifest, builds, and pushes it to a
-plugged-in phone. First run takes a few minutes; later ones about 20 seconds.
+Wraps the HTML in a Capacitor shell, patches the manifest, and builds. First run takes a
+few minutes; later ones about 20 seconds.
 
 Prerequisites and the faster edit-test loop are in **[BUILD.md](BUILD.md)**.
 
@@ -189,7 +190,9 @@ Prerequisites and the faster edit-test loop are in **[BUILD.md](BUILD.md)**.
 |---|---|
 | `index.html` | The entire app. |
 | `privacy.html` | Privacy policy, published alongside the app. |
-| `build-apk.sh` | Scaffolds a Capacitor project and builds an APK. |
+| `build-debug.sh` | Debug APK for testing on your own phone. |
+| `build-release.sh` | Signed AAB + APK for Play; creates the upload key on first run. |
+| `build-apk.sh` | The engine both wrappers call. |
 | `BUILD.md` | Setup, options, signing, and Play Store notes. |
 | `PLANS.md` | Parked ideas and the reasoning behind them. |
 | `tools/make-icons.js` | Draws the launcher icons and store art. |
