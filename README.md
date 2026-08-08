@@ -48,9 +48,10 @@ single biscuit doesn't write off the whole day.
 - A bad day costs **one day of progress, not the whole streak.** Losing a week's work over
   a birthday party is how you attach anxiety to food, which is not what this is for.
 
-**Each child has their own.** Pick who's being scanned on the home screen; tap ＋ to add
-another, long-press a child to rename or remove them. Their streaks are completely
-separate, so scanning one sibling never disturbs another's progress.
+**Each child has their own.** Pick who's being scanned on the home screen. Tap a child to
+choose them; tap the chosen one again (it shows a ✏️) to rename them, or clear the name
+box to remove them. ＋ adds another. Their streaks are completely separate, so scanning
+one sibling never disturbs another's progress.
 
 ---
 

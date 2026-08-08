@@ -161,8 +161,11 @@
   }
   .kid .face { font-size: 24px; line-height: 1; }
   .kid .kname { font-size: 11px; opacity: .75; max-width: 66px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kid { position: relative; }
   .kid.on { border-color: rgba(125,255,176,.9); background: rgba(125,255,176,.16); }
   .kid.on .kname { opacity: 1; }
+  /* hints that tapping the chosen child again lets you rename it */
+  .kid .pencil { position: absolute; top: -6px; right: -5px; font-size: 11px; opacity: .85; }
   .kid.add { opacity: .6; }
   .kid:active { transform: scale(.93); }
 
@@ -1532,7 +1535,7 @@
     updateHomeState();
   }
   function editProfile(p) {
-    var n = window.prompt("Rename (or clear the box to remove)", p.name);
+    var n = window.prompt("Name for this kid\n(clear the box to remove them)", p.name);
     if (n === null) return;
     n = n.trim();
     if (!n) {
@@ -1552,16 +1555,25 @@
     if (!box) return;
     box.innerHTML = "";
     profiles.list.forEach(function (p) {
+      var active = p.id === profiles.activeId;
       var b = document.createElement("button");
-      b.className = "kid" + (p.id === profiles.activeId ? " on" : "");
-      b.innerHTML = '<span class="face">' + p.face + '</span><span class="kname">' + p.name + '</span>';
+      b.className = "kid" + (active ? " on" : "");
+      b.innerHTML = '<span class="face">' + p.face + '</span>' +
+                    '<span class="kname">' + p.name + '</span>' +
+                    (active ? '<span class="pencil">✏️</span>' : '');
+
+      // First tap picks the child; tapping the one already picked edits it.
+      // Long-press edits any of them.
+      var held = false, t = null;
       b.addEventListener("click", function () {
-        profiles.activeId = p.id; saveProfiles(); renderProfiles(); updateHomeState(); buzz(15);
+        if (held) { held = false; return; }        // the long-press already handled it
+        if (active) { editProfile(p); return; }
+        profiles.activeId = p.id;
+        saveProfiles(); renderProfiles(); updateHomeState(); buzz(15);
       });
-      // long-press to rename or remove
-      var t = null;
       b.addEventListener("pointerdown", function () {
-        t = setTimeout(function () { editProfile(p); buzz(40); }, 650);
+        held = false;
+        t = setTimeout(function () { held = true; editProfile(p); buzz(40); }, 650);
       });
       ["pointerup", "pointerleave", "pointercancel"].forEach(function (ev) {
         b.addEventListener(ev, function () { clearTimeout(t); });
