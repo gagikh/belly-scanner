@@ -54,8 +54,11 @@ tracking that might already be adequate.
 ---
 
 ### ~~An alert sound when a worm is found~~
-**Status:** done — soft two-note sonar ping, synthesised, at the reveal only, and
-only when a worm is actually found. A clear tummy stays silent. Reasoning kept below.
+**Status:** done — two-note sonar ping, synthesised, repeating every 3.2s while a worm
+is on screen. Silent the moment the tummy is clear or the scan ends. Reasoning below.
+
+Tuning lives in one place if it needs adjusting: `sonarPing()` for the tone, `PING_EVERY`
+for the interval, and the `noiseGain` values for the scanner hiss.
 
 Currently the app makes only the scanner hiss, by deliberate choice.
 

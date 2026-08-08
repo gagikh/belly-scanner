@@ -447,7 +447,7 @@
 
       noiseGain = a.createGain();
       noiseGain.gain.setValueAtTime(0, a.currentTime);
-      noiseGain.gain.linearRampToValueAtTime(0.05, a.currentTime + 0.7);
+      noiseGain.gain.linearRampToValueAtTime(0.1, a.currentTime + 0.7);
 
       noiseSrc.connect(bp); bp.connect(lp); lp.connect(noiseGain);
       noiseGain.connect(a.destination);
@@ -464,19 +464,21 @@
     if (!a) return;
     var t0 = a.currentTime;
     // the second note is lower and quieter, so it reads as the returning echo
-    [{ f: 1320, at: 0, g: 0.085 }, { f: 990, at: 0.26, g: 0.05 }].forEach(function (note) {
+    [{ f: 1660, at: 0, g: 0.11 }, { f: 1245, at: 0.22, g: 0.065 }].forEach(function (note) {
       try {
         var o = a.createOscillator(), g = a.createGain(), lp = a.createBiquadFilter();
-        o.type = "sine";
+        // triangle keeps some upper harmonics, so the ping cuts through the hiss
+        o.type = "triangle";
         o.frequency.setValueAtTime(note.f, t0 + note.at);
-        o.frequency.exponentialRampToValueAtTime(note.f * 0.72, t0 + note.at + 0.45);
-        lp.type = "lowpass"; lp.frequency.value = 2600;
+        o.frequency.exponentialRampToValueAtTime(note.f * 0.62, t0 + note.at + 0.30);
+        lp.type = "lowpass"; lp.frequency.value = 5200;
+        // near-instant attack and a shorter tail: that's what reads as "sharp"
         g.gain.setValueAtTime(0.0001, t0 + note.at);
-        g.gain.exponentialRampToValueAtTime(note.g, t0 + note.at + 0.02);
-        g.gain.exponentialRampToValueAtTime(0.0001, t0 + note.at + 0.55);
+        g.gain.exponentialRampToValueAtTime(note.g, t0 + note.at + 0.005);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + note.at + 0.34);
         o.connect(lp); lp.connect(g); g.connect(a.destination);
         o.start(t0 + note.at);
-        o.stop(t0 + note.at + 0.62);
+        o.stop(t0 + note.at + 0.4);
       } catch (e) {}
     });
   }
@@ -993,7 +995,7 @@
 
     // the hiss swells a little when the probe is moving
     if (noiseGain) {
-      try { noiseGain.gain.value = clamp(0.04 + motionMag * 0.06, 0, 0.11); } catch (e) {}
+      try { noiseGain.gain.value = clamp(0.085 + motionMag * 0.1, 0, 0.21); } catch (e) {}
     }
 
     if (isFrozen) { camX = frozenCam.x; camY = frozenCam.y; return; }
@@ -1445,6 +1447,9 @@
   ];
   var lastTime = 0, running = false;
   var perfAcc = 0, perfN = 0;
+  // the ping repeats while a worm is on screen; spaced out so it stays a
+  // sonar sweep rather than nagging
+  var PING_EVERY = 3.2, nextPingAt = 0;
 
   // ---- the day's diet, ticked off by a grown-up before the scan ----
   var FOODS = [
@@ -2166,6 +2171,11 @@
         worms[i].update(dt, t);
         if (worms[i].dead) worms.splice(i, 1);
       }
+      // keep pinging while something is in there, like a real sonar
+      if (MODE === "play" && worms.length && t > nextPingAt) {
+        sonarPing();
+        nextPingAt = t + PING_EVERY;
+      }
       renderScan(ctx, W, H, t, { beam: false, worms: true });
       updateCount();
     }
@@ -2185,7 +2195,7 @@
     var n = wormTarget();
     for (var i = 0; i < n; i++) worms.push(new Worm());
     buzz(n ? [80, 50, 80] : 40);
-    if (n > 0) sonarPing();          // only when there's something to find
+    if (n > 0) { sonarPing(); nextPingAt = performance.now() / 1000 + PING_EVERY; }
     var res = todayResult, improved = res && !res.first && res.after < res.before;
     if (n === 0) setStatus(improved ? "They're gone! ✨" : "Nothing wriggling in there ✨", "good");
     else if (improved) setStatus("One left! Still " + n + " in there 🪱", "good");
