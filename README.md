@@ -21,6 +21,10 @@ was captured without a camera attached.*
 Telling a five-year-old that sugar is bad does nothing. Showing them a worm in their
 own belly, live, on a scanner that responds to what they ate — that lands.
 
+**The worms carry over between days.** That's the point — one good day sends a worm away,
+one sugary day brings it back, and each child has their own streak. It stops being a
+one-off scare and becomes a reason to eat better tomorrow.
+
 The lesson is in the cause and effect, not in the scare. So:
 
 1. **A grown-up ticks off what the child ate today** — before the scan, out of sight
@@ -33,6 +37,20 @@ The lesson is in the cause and effect, not in the scare. So:
    what the wrigglers like to eat. Swap one sugary thing for water tomorrow and scan again."*
 
 All healthy? The tummy comes back clear, and the app says why.
+
+### The streak
+
+A **good day** is at most one sugary or greasy thing — achievable in real life, so a
+single biscuit doesn't write off the whole day.
+
+- **Good day** → one worm leaves. Two worms become one; one becomes none.
+- **Sugary day** → one comes back. Never more than two, ever.
+- A bad day costs **one day of progress, not the whole streak.** Losing a week's work over
+  a birthday party is how you attach anxiety to food, which is not what this is for.
+
+**Each child has their own.** Pick who's being scanned on the home screen; tap ＋ to add
+another, long-press a child to rename or remove them. Their streaks are completely
+separate, so scanning one sibling never disturbs another's progress.
 
 ---
 
@@ -51,12 +69,13 @@ gets too small to detect.
 footer reads `SEEKING…` while it looks, then `NAVEL LOCK` with a dashed target ring over
 the belly button. That's your cue.
 
-**Can't find it? Tap where it is.** On a small child the navel is shallow and smooth,
-with almost no shadow for the detector to catch, so it often won't find one — after a
-few seconds it asks you to tap. A hand-placed navel shows a solid green ring instead of
-the dashed blue one, the footer reads `NAVEL SET`, and it stays exactly where you put it.
-Tap again to move it. This is the reliable route with toddlers; don't fight the
-auto-detection.
+**Tap the belly button to mark it — any time, from the first second.** Auto-detection is
+only a suggestion: it shows a dashed blue ring labelled `NAVEL?` with *tap to move* under
+it, and it is often wrong, especially on a small child whose navel is shallow and casts
+almost no shadow. One tap overrides it. A hand-placed navel is a solid green ring reading
+`NAVEL · SET`, the footer says `NAVEL SET`, and it stays exactly where you put it for the
+rest of the scan. Tap again to move it. With toddlers, just place it yourself — don't
+wait for the detector.
 
 **Tap 👁️ SEE INSIDE** when the suspense has built — the scan never stops on its own, so
 take as long as you like.
@@ -152,8 +171,8 @@ Nothing leaves the device — saved scans sit in the browser's local storage.
 
 ## Build an Android APK
 
-```powershell
-.\build-apk.ps1 -Install
+```bash
+./build-apk.sh --install
 ```
 
 Wraps the HTML in a Capacitor shell, patches the manifest, builds, and pushes it to a
@@ -168,8 +187,13 @@ Prerequisites and the faster edit-test loop are in **[BUILD.md](BUILD.md)**.
 | | |
 |---|---|
 | `index.html` | The entire app. |
-| `build-apk.ps1` | Scaffolds a Capacitor project and builds an APK. |
-| `BUILD.md` | Setup, switches, and Play Store notes. |
+| `privacy.html` | Privacy policy, published alongside the app. |
+| `build-apk.sh` | Scaffolds a Capacitor project and builds an APK. |
+| `BUILD.md` | Setup, options, signing, and Play Store notes. |
+| `PLANS.md` | Parked ideas and the reasoning behind them. |
+| `tools/make-icons.js` | Draws the launcher icons and store art. |
+| `android-assets/` | Generated launcher icons, copied in at build time. |
+| `store/` | 512px listing icon and 1024×500 feature graphic. |
 | `preview.png` | The screenshot above. |
 
 `android-build/` is generated and gitignored.

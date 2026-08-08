@@ -151,6 +151,21 @@
   #result.clean { background: radial-gradient(circle at 50% 35%, #0e5233 0%, #061a12 75%); }
   #result h1 { text-shadow: 0 0 26px rgba(140,200,255,.5); }
   #result.clean h1 { text-shadow: 0 0 26px rgba(120,255,170,.6); }
+  /* who is being scanned */
+  #who { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; max-width: 420px; }
+  .kid {
+    border: 2px solid rgba(255,255,255,.16); background: rgba(255,255,255,.07);
+    border-radius: 16px; padding: 8px 12px 6px; font: inherit; color: #eaf6ff;
+    display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 62px;
+    transition: transform .08s, border-color .15s, background .15s;
+  }
+  .kid .face { font-size: 24px; line-height: 1; }
+  .kid .kname { font-size: 11px; opacity: .75; max-width: 66px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kid.on { border-color: rgba(125,255,176,.9); background: rgba(125,255,176,.16); }
+  .kid.on .kname { opacity: 1; }
+  .kid.add { opacity: .6; }
+  .kid:active { transform: scale(.93); }
+
   #diet { background: radial-gradient(circle at 50% 25%, #16324f 0%, #0b1220 72%); }
   #dietFoods { grid-template-columns: repeat(4, 1fr); gap: 7px; }
   @media (max-height: 700px) { #dietFoods { grid-template-columns: repeat(6, 1fr); } }
@@ -271,8 +286,10 @@
   <div class="screen" id="start">
     <div class="blob">🫃</div>
     <h1>TUMMY<br>SCANNER 3000</h1>
-    <p class="sub">Let's look inside and see what's living in there…</p>
-    <button class="bigbtn" id="go">SCAN MY BELLY</button>
+    <p class="sub">Who's getting scanned?</p>
+    <div id="who"></div>
+    <div id="homeState" class="sub" style="font-size:14px; color:#a9e6c4; min-height:1.2em;"></div>
+    <button class="bigbtn" id="go">SCAN THIS BELLY</button>
     <button class="linkbtn" id="openGallery">📁 Saved scans (<span id="galcount">0</span>)</button>
     <p class="sub" style="font-size:12px; opacity:.45; max-width:28ch;">A pretend X-ray game. Not a real medical scanner.</p>
     <div id="err" class="hidden"></div>
@@ -280,7 +297,7 @@
 
   <!-- DIET: parent fills this in before scanning -->
   <div class="screen hidden" id="diet">
-    <h1 style="font-size:clamp(22px,6.5vw,32px);">WHAT DID YOU<br>EAT TODAY?</h1>
+    <h1 id="dietTitle" style="font-size:clamp(22px,6.5vw,32px);">WHAT DID YOU<br>EAT TODAY?</h1>
     <p class="sub">Tap everything you had. Be honest — the scanner knows 👀</p>
     <div id="dietFoods" class="foods" style="width:100%; max-width:420px;"></div>
     <div class="sub" id="dietTally" style="font-size:13px; min-height:1.2em;"></div>
@@ -435,6 +452,32 @@
     } catch (e) { noiseSrc = null; noiseGain = null; }
   }
 
+  // A soft two-note sonar ping when something is found. Deliberately not an
+  // alarm: a harsh alert attached to "something is wrong inside your body" is a
+  // good way to make a child anxious about eating. Sounds like a game, over in
+  // half a second, and never repeats.
+  function sonarPing() {
+    var a = audio();
+    if (!a) return;
+    var t0 = a.currentTime;
+    // the second note is lower and quieter, so it reads as the returning echo
+    [{ f: 1320, at: 0, g: 0.085 }, { f: 990, at: 0.26, g: 0.05 }].forEach(function (note) {
+      try {
+        var o = a.createOscillator(), g = a.createGain(), lp = a.createBiquadFilter();
+        o.type = "sine";
+        o.frequency.setValueAtTime(note.f, t0 + note.at);
+        o.frequency.exponentialRampToValueAtTime(note.f * 0.72, t0 + note.at + 0.45);
+        lp.type = "lowpass"; lp.frequency.value = 2600;
+        g.gain.setValueAtTime(0.0001, t0 + note.at);
+        g.gain.exponentialRampToValueAtTime(note.g, t0 + note.at + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + note.at + 0.55);
+        o.connect(lp); lp.connect(g); g.connect(a.destination);
+        o.start(t0 + note.at);
+        o.stop(t0 + note.at + 0.62);
+      } catch (e) {}
+    });
+  }
+
   function stopNoise() {
     if (!noiseSrc) return;
     try {
@@ -582,9 +625,17 @@
     trkPrev = new Int16Array(TW * TH);
     trkCur = new Int16Array(TW * TH);
     integ = null; mask = null; maskStack = null;   // sizes changed, rebuild lazily
+    trackerResetFlow();
+    maskValid = false;
+  }
+
+  // Reset only the motion state. Deliberately keeps the body mask and the
+  // navel: reveal happens right after a scan that just worked those out, and
+  // throwing them away means the worms get placed with no idea where the body
+  // is — which is exactly when we need to know.
+  function trackerResetFlow() {
     trkHasPrev = false;
     flowConf = 0;
-    maskValid = false;
   }
 
   function trackerGrab() {
@@ -999,7 +1050,7 @@
     anchorW.x = ns ? ns.x : W * 0.5;
     anchorW.y = ns ? ns.y : H * 0.5;
     if (ns) applyFocus(ns.x / (W || 1), ns.y / (H || 1));
-    trackerInit();
+    trackerResetFlow();
   }
 
   // lock onto a new spot: focus there, and match there
@@ -1074,6 +1125,7 @@
     list.unshift({
       id: Date.now(),
       when: new Date().toLocaleString(),
+      who: activeName(),
       n: worms.filter(function (w) { return !w.dying; }).length,
       img: img
     });
@@ -1101,12 +1153,12 @@
       im.src = item.img; im.alt = "Scan with " + item.n + " worms";
       im.addEventListener("click", function () {
         $("viewerImg").src = item.img;
-        $("viewerCap").textContent = "🪱 " + item.n + " worms · " + item.when;
+        $("viewerCap").textContent = (item.who ? item.who + " · " : "") + "🪱 " + item.n + " worms · " + item.when;
         $("viewer").classList.remove("hidden");
       });
       var cap = document.createElement("div");
       cap.className = "cap";
-      cap.textContent = "🪱 " + item.n + " · " + item.when;
+      cap.textContent = (item.who ? item.who + " · " : "") + "🪱 " + item.n + " · " + item.when;
       var del = document.createElement("button");
       del.className = "del"; del.textContent = "✕";
       del.addEventListener("click", function (ev) {
@@ -1149,7 +1201,7 @@
   function spawnPoint() {
     // if we found the navel, put the worms in orbit around it — that's where a
     // kid expects the inside of their tummy to be
-    var ns = (typeof navelScreen === "function") ? navelScreen() : null;
+    var ns = navelScreen();
     var i, x, y;
     if (ns) {
       for (i = 0; i < 80; i++) {
@@ -1381,12 +1433,12 @@
   var REVEAL_DELAY = 1.6;      // how long before the SEE INSIDE button appears
   var scanMsgIdx = -1, shakeUntil = 0, navelHintUntil = 0;
   var SCAN_LINES = [
+    "👆 Tap the belly button to mark it",
     "SCANNING… move slowly over the belly",
     "Analysing tummy contents… 🔬",
+    "👆 Wrong spot? Tap the right one",
     "Hmm. Something is moving in there…",
-    "Warming up the X-ray beam…",
-    "Detecting wrigglers… hold still!",
-    "Almost got a clear picture…"
+    "Detecting wrigglers… hold still!"
   ];
   var lastTime = 0, running = false;
   var perfAcc = 0, perfN = 0;
@@ -1411,11 +1463,212 @@
   function junkEaten() { return eaten.filter(function (f) { return f.junk; }); }
   function goodEaten() { return eaten.filter(function (f) { return !f.junk; }); }
 
-  // 1 or 2 worms, never more — a wall of worms is scary, not instructive
+  // ------------------------------------------------------------------
+  // THE STREAK
+  //
+  // The worms carry over between days. A good day (at most one sugary thing)
+  // sends one away; a bad day brings one back. Never more than two, and a bad
+  // day costs a single day of progress rather than wiping the lot — the point
+  // is "you can fix this tomorrow", not "you ruined it".
+  // ------------------------------------------------------------------
+  var MAX_WORMS = 2;
+  var STREAK_KEY = "bellyStreak.v1";
+
+  // ------------------------------------------------------------------
+  // WHO'S BEING SCANNED
+  //
+  // With more than one child a single shared streak is worse than none —
+  // scanning the second kid would quietly wreck the first one's progress.
+  // Every child gets their own history, chosen before the scan.
+  // ------------------------------------------------------------------
+  var PROFILE_KEY = "bellyProfiles.v1";
+  var FACES = ["🦊", "🐻", "🐰", "🐨", "🐯", "🦁", "🐼", "🐸"];
+  var profiles = { list: [], activeId: null };
+
+  // Date.now() alone collides if two profiles are made in the same millisecond,
+  // and two children sharing an id means two children sharing a streak.
+  function newProfileId() {
+    var id, guard = 0;
+    do {
+      id = "k" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    } while (guard++ < 20 && profiles.list.some(function (p) { return p.id === id; }));
+    return id;
+  }
+
+  function loadProfiles() {
+    try {
+      var p = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null");
+      if (p && Array.isArray(p.list)) profiles = p;
+    } catch (e) {}
+    if (!profiles.list.length) {
+      profiles.list = [{ id: newProfileId(), name: "Kid 1", face: FACES[0] }];
+      profiles.activeId = profiles.list[0].id;
+      saveProfiles();
+    }
+    if (!activeProfile()) profiles.activeId = profiles.list[0].id;
+  }
+  function saveProfiles() {
+    try { localStorage.setItem(PROFILE_KEY, JSON.stringify(profiles)); } catch (e) {}
+  }
+  function activeProfile() {
+    for (var i = 0; i < profiles.list.length; i++) {
+      if (profiles.list[i].id === profiles.activeId) return profiles.list[i];
+    }
+    return null;
+  }
+  function activeName() {
+    var p = activeProfile();
+    return p ? p.name : "Kid";
+  }
+  function addProfile() {
+    if (profiles.list.length >= 6) return;
+    var n = (window.prompt("Who else is getting scanned?", "Kid " + (profiles.list.length + 1)) || "").trim();
+    if (!n) return;
+    var p = { id: newProfileId(), name: n.slice(0, 14), face: FACES[profiles.list.length % FACES.length] };
+    profiles.list.push(p);
+    profiles.activeId = p.id;
+    saveProfiles();
+    renderProfiles();
+    updateHomeState();
+  }
+  function editProfile(p) {
+    var n = window.prompt("Rename (or clear the box to remove)", p.name);
+    if (n === null) return;
+    n = n.trim();
+    if (!n) {
+      if (profiles.list.length <= 1) return;                 // always keep one
+      if (!window.confirm("Remove " + p.name + " and their progress?")) return;
+      profiles.list = profiles.list.filter(function (x) { return x.id !== p.id; });
+      try { localStorage.removeItem(STREAK_KEY + "." + p.id); } catch (e) {}
+      if (profiles.activeId === p.id) profiles.activeId = profiles.list[0].id;
+    } else {
+      p.name = n.slice(0, 14);
+    }
+    saveProfiles(); renderProfiles(); updateHomeState();
+  }
+
+  function renderProfiles() {
+    var box = $("who");
+    if (!box) return;
+    box.innerHTML = "";
+    profiles.list.forEach(function (p) {
+      var b = document.createElement("button");
+      b.className = "kid" + (p.id === profiles.activeId ? " on" : "");
+      b.innerHTML = '<span class="face">' + p.face + '</span><span class="kname">' + p.name + '</span>';
+      b.addEventListener("click", function () {
+        profiles.activeId = p.id; saveProfiles(); renderProfiles(); updateHomeState(); buzz(15);
+      });
+      // long-press to rename or remove
+      var t = null;
+      b.addEventListener("pointerdown", function () {
+        t = setTimeout(function () { editProfile(p); buzz(40); }, 650);
+      });
+      ["pointerup", "pointerleave", "pointercancel"].forEach(function (ev) {
+        b.addEventListener(ev, function () { clearTimeout(t); });
+      });
+      box.appendChild(b);
+    });
+    var add = document.createElement("button");
+    add.className = "kid add";
+    add.innerHTML = '<span class="face">＋</span><span class="kname">add</span>';
+    add.addEventListener("click", addProfile);
+    box.appendChild(add);
+  }
+
+  // each child's streak lives under its own key
+  function streakKey() { return STREAK_KEY + "." + (profiles.activeId || "default"); }
+
+  function dateKey(d) {
+    d = d || new Date();
+    var m = d.getMonth() + 1, day = d.getDate();
+    return d.getFullYear() + "-" + (m < 10 ? "0" : "") + m + "-" + (day < 10 ? "0" : "") + day;
+  }
+
+  function blankStreak() {
+    return { level: null, levelBefore: null, goodRun: 0, goodRunBefore: 0, bestRun: 0, lastDate: null, days: [] };
+  }
+
+  function loadStreak() {
+    try {
+      // one-time move of the old single-child store onto the first profile
+      var legacy = localStorage.getItem(STREAK_KEY);
+      if (legacy && !localStorage.getItem(streakKey())) {
+        localStorage.setItem(streakKey(), legacy);
+        localStorage.removeItem(STREAK_KEY);
+      }
+      var s = JSON.parse(localStorage.getItem(streakKey()) || "null");
+      if (s && typeof s === "object") {
+        var b = blankStreak();
+        for (var k in b) if (!(k in s)) s[k] = b[k];
+        if (!Array.isArray(s.days)) s.days = [];
+        return s;
+      }
+    } catch (e) {}
+    return blankStreak();
+  }
+
+  function saveStreak(s) {
+    try { localStorage.setItem(streakKey(), JSON.stringify(s)); } catch (e) {}
+  }
+
+  function isGoodDay(junkCount) { return junkCount <= 1; }
+
+  // Works out today's worm count from the diet plus what carried over.
+  // Re-running it for the same day recomputes from that day's starting point,
+  // so re-scanning after fixing the food list does the right thing.
+  var todayResult = null;
+
+  function applyDiet() {
+    var st = loadStreak();
+    var today = dateKey();
+    var junk = junkEaten().length;
+    var good = isGoodDay(junk);
+
+    if (st.lastDate !== today) {
+      st.levelBefore = st.level;              // null on the very first run
+      st.goodRunBefore = st.goodRun;
+      st.lastDate = today;
+    }
+
+    var before = st.levelBefore;
+    if (before === null || before === undefined) {
+      // first ever scan: start from what they ate today
+      st.level = junk === 0 ? 0 : (junk >= 3 ? MAX_WORMS : 1);
+    } else {
+      st.level = clamp(before + (good ? -1 : 1), 0, MAX_WORMS);
+    }
+    st.goodRun = good ? st.goodRunBefore + 1 : 0;
+    st.bestRun = Math.max(st.bestRun || 0, st.goodRun);
+
+    st.days = st.days.filter(function (d) { return d.d !== today; });
+    st.days.push({ d: today, junk: junk, level: st.level });
+    if (st.days.length > 30) st.days = st.days.slice(-30);
+
+    saveStreak(st);
+    todayResult = {
+      before: before,
+      after: st.level,
+      good: good,
+      junk: junk,
+      goodRun: st.goodRun,
+      first: before === null || before === undefined
+    };
+    return todayResult;
+  }
+
   function wormTarget() {
-    var j = junkEaten().length;
-    if (j === 0) return 0;
-    return j >= 3 ? 2 : 1;
+    return todayResult ? todayResult.after : 0;
+  }
+
+  // short line for the home screen
+  function streakLine() {
+    var st = loadStreak();
+    if (st.level === null) return "First scan — let's see what's in there.";
+    var bits = [];
+    bits.push(st.level === 0 ? "✨ Tummy is clear"
+                             : "🪱 " + st.level + (st.level === 1 ? " worm" : " worms") + " in there");
+    if (st.goodRun > 0) bits.push("🔥 " + st.goodRun + " good " + (st.goodRun === 1 ? "day" : "days") + " in a row");
+    return bits.join("  ·  ");
   }
 
   function listNames(arr) {
@@ -1480,7 +1733,9 @@
     var el = $("dietTally");
     if (!eaten.length) { el.textContent = "Nothing ticked yet."; return; }
     var j = junkEaten().length;
-    el.textContent = eaten.length + " ticked" + (j ? " · " + j + " sugary/greasy" : " · all good stuff ✅");
+    el.textContent = eaten.length + " ticked · " +
+      (j === 0 ? "all good stuff ✅" : j + " sugary/greasy") +
+      (isGoodDay(j) ? "  →  good day ✅" : "  →  sugary day");
   }
 
   // ---- the verdict, shown after the reveal ----
@@ -1488,30 +1743,56 @@
     MODE = "result";
     stopNoise();
     setTorch(false);
+    keepAwake(false);
     $("hud").classList.add("hidden");
-    var n = worms.length, j = junkEaten(), g = goodEaten();
-    var r = $("result");
 
-    if (n === 0) {
-      r.classList.add("clean");
-      $("resultEmoji").textContent = "✨";
-      $("resultTitle").textContent = "TUMMY IS CLEAR!";
-      $("resultBody").innerHTML =
-        "Nothing wriggling in there today." +
-        (g.length ? "<br><br>You had <b>" + listNames(g) + "</b> — that's the kind of food your tummy helpers like." : "") +
-        "<br><br>" + pick(FACTS);
+    var res = todayResult || { before: null, after: worms.length, good: true, junk: 0, goodRun: 0, first: true };
+    var n = res.after, j = junkEaten(), g = goodEaten();
+    var r = $("result");
+    var who = activeName();
+    var head, body;
+
+    // what changed since the last scan is the whole point — lead with it
+    if (res.first) {
+      head = n === 0 ? "TUMMY IS CLEAR!" : (n === 1 ? "ONE WRIGGLER" : "TWO WRIGGLERS");
+      body = n === 0
+        ? "Nothing wriggling in " + who + "'s tummy at all. Keep eating like today and it stays that way."
+        : "Today " + who + " had <b>" + listNames(j) + "</b> — that's exactly what wrigglers like to eat.";
+    } else if (res.after < res.before) {
+      head = n === 0 ? "THEY'RE ALL GONE! 🎉" : "ONE LEFT! 🎉";
+      body = who + " had a good day, so one wriggler packed up and left."
+           + (g.length ? " The <b>" + listNames(g) + "</b> did that." : "")
+           + (n > 0 ? "<br><br>One more good day and the last one goes too." : "");
+    } else if (res.after > res.before) {
+      head = n === 1 ? "ONE MOVED IN" : "ANOTHER ONE MOVED IN";
+      body = "Today " + who + " had <b>" + listNames(j) + "</b>, and that brought a wriggler back."
+           + "<br><br>Nothing is ruined — one good day tomorrow and it leaves again.";
+    } else if (n === 0) {
+      head = "STILL CLEAR! ✨";
+      body = "Another good day. Nothing has moved in.";
     } else {
-      r.classList.remove("clean");
-      $("resultEmoji").textContent = "🪱";
-      $("resultTitle").textContent = n === 1 ? "ONE WRIGGLER" : "TWO WRIGGLERS";
-      $("resultBody").innerHTML =
-        "Today you had <b>" + listNames(j) + "</b>. That's exactly what the wrigglers like to eat." +
-        (g.length ? "<br><br>The <b>" + listNames(g) + "</b> helped though — that's why there aren't more." : "") +
-        "<br><br>Swap one sugary thing for water or fruit tomorrow and scan again. Let's see if they leave." +
-        "<br><br>" + pick(FACTS);
+      head = n === 1 ? "STILL ONE IN THERE" : "STILL TWO IN THERE";
+      body = "No change today." + (j.length ? " There was still <b>" + listNames(j) + "</b>." : "")
+           + "<br><br>One day with no more than one sugary thing and one of them leaves.";
     }
+
+    if (res.goodRun > 1) {
+      body += "<br><br>🔥 <b>" + res.goodRun + " good days in a row.</b>";
+    }
+    body += "<br><br>" + pick(FACTS);
+
+    r.classList.toggle("clean", n === 0);
+    $("resultEmoji").textContent = n === 0 ? "✨" : (res.after < res.before ? "🎉" : "🪱");
+    $("resultTitle").textContent = head;
+    $("resultBody").innerHTML = body;
     r.classList.remove("hidden");
+    updateHomeState();
     buzz(60);
+  }
+
+  function updateHomeState() {
+    var el = $("homeState");
+    if (el) el.textContent = streakLine();
   }
 
   // ==================================================================
@@ -1782,10 +2063,18 @@
       c.lineTo(Math.cos(a) * 22, Math.sin(a) * 22);
     }
     c.stroke();
-    c.fillStyle = manual ? "rgba(150,255,190,0.95)" : "rgba(165,235,255,0.95)";
     c.font = "600 10px ui-monospace, Menlo, Consolas, monospace";
     c.textAlign = "center";
-    c.fillText(manual ? "NAVEL · SET" : "NAVEL", 0, 42);
+    if (manual) {
+      c.fillStyle = "rgba(150,255,190,0.95)";
+      c.fillText("NAVEL · SET", 0, 42);
+    } else {
+      // a guess, and it says so — with the correction always on offer
+      c.fillStyle = "rgba(165,235,255,0.95)";
+      c.fillText("NAVEL?", 0, 42);
+      c.fillStyle = "rgba(215,235,255,0.7)";
+      c.fillText("tap to move", 0, 55);
+    }
     c.textAlign = "left";
     c.restore();
   }
@@ -1840,11 +2129,14 @@
       scanT += dt;
       renderScan(ctx, W, H, t, { beam: true, worms: false });
       // keeps scanning forever — you tap SEE INSIDE when you're ready
-      // auto-detection can't find a navel on a small, smooth tummy — offer the tap
-      if (!navel && !navelManual && scanT > 6 && t > navelHintUntil) {
-        navelHintUntil = t + 11;
-        shakeUntil = t + 4;
-        setStatus("Can't spot the belly button — tap where it is 👆");
+      // Auto-detection is a suggestion, not an answer — it lands in the wrong
+      // place often enough (and confidently enough) that the offer to correct it
+      // has to be permanent, not something that only appears when it gives up.
+      if (!navelManual && scanT > 3.5 && t > navelHintUntil) {
+        navelHintUntil = t + 9;
+        shakeUntil = t + 3.5;
+        setStatus(navel ? "👆 Wrong spot? Tap the belly button"
+                        : "👆 Tap where the belly button is");
       }
       if (motionMag > 0.42 && t > shakeUntil && MODE === "scanning") {
         shakeUntil = t + 1.8; scanMsgIdx = -1;
@@ -1877,10 +2169,14 @@
     // "the belly is here" — worms are pinned relative to this orientation
     resetOrientationRef();
     worms = [];
+    applyDiet();                 // works out today's count from the diet + the streak
     var n = wormTarget();
     for (var i = 0; i < n; i++) worms.push(new Worm());
     buzz(n ? [80, 50, 80] : 40);
-    if (n === 0) setStatus("Nothing wriggling in there. Nice work ✨", "good");
+    if (n > 0) sonarPing();          // only when there's something to find
+    var res = todayResult, improved = res && !res.first && res.after < res.before;
+    if (n === 0) setStatus(improved ? "They're gone! ✨" : "Nothing wriggling in there ✨", "good");
+    else if (improved) setStatus("One left! Still " + n + " in there 🪱", "good");
     else setStatus(n === 1 ? "Uh oh — there's one in there 🪱" : "Uh oh — two of them in there 🪱", "bad");
     updateCount();
     // auto-keep the reveal so the other kid can see this exact scan later
@@ -1904,6 +2200,8 @@
   // step 1 — the grown-up ticks off what was eaten today
   function openDiet() {
     $("err").classList.add("hidden");
+    var p = activeProfile();
+    $("dietTitle").innerHTML = "WHAT DID " + (p ? p.face + " " + p.name.toUpperCase() : "YOU") + "<br>EAT TODAY?";
     buildDiet();
     $("start").classList.add("hidden");
     $("result").classList.add("hidden");
@@ -1977,6 +2275,7 @@
     $("viewer").classList.add("hidden");
     $("doneWrap").classList.add("hidden");
     $("start").classList.remove("hidden");
+    updateHomeState();
     if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(function () {});
   }
 
@@ -2166,7 +2465,10 @@
   });
 
   resize();
+  loadProfiles();
+  renderProfiles();
   updateGalCount();
+  updateHomeState();
 })();
 </script>
 </body>
