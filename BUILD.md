@@ -184,24 +184,38 @@ adb install -r tummy-scanner-debug.apk
 Also check the file actually transferred completely — a truncated copy produces the same
 message. The APK should be a few megabytes; the script prints the size when it finishes.
 
-### "Unsupported class file major version 69"
-
-Gradle is running on a JDK that's too new — 69 means Java 25 (68 = 24, 67 = 23, 66 = 22,
-65 = 21, 61 = 17). Android tooling wants **Java 17 or 21**.
-
-The script checks this now: it reads the version of every JDK it can find and picks the
-newest one in range, ignoring `JAVA_HOME` if that points at something unusable. It prints
-which one it chose and which it skipped. If nothing suitable exists it stops with a clear
-message instead of letting Gradle fail cryptically.
-
-Android Studio bundles a compatible JDK, so installing it is usually the whole fix. To
-point at one explicitly, use `build.local.conf`:
+### Diagnosing the toolchain
 
 ```bash
-JAVA_HOME="T:/Program Files/Android/Android Studio/jbr"
+./build-apk.sh --doctor
 ```
 
-The accepted range is `JAVA_MIN` / `JAVA_MAX` in `build.conf` if you ever need to widen it.
+Lists every JDK it can find with its version, marks the ones Gradle can use, shows which
+one it picked, the Gradle wrapper version, and the SDK path — then stops without
+building. Run this first whenever a build fails at the toolchain level.
+
+### "Unsupported class file major version 69"
+
+Gradle is running on a JDK newer than it understands — 69 means Java 25 (68 = 24,
+67 = 23, 66 = 22, 65 = 21, 61 = 17).
+
+**The ceiling comes from Gradle, not Android.** Capacitor pins Gradle 8.14.x, which runs
+on Java 17–24 and dies on 25; JDK 25 support arrived in Gradle 9.1. Note that recent
+Android Studio builds ship a Java 25 JBR, so *using Android Studio's bundled JDK can be
+the cause rather than the cure*.
+
+The scripts read the version of every JDK they can find and pick the newest one within
+`JAVA_MIN`–`JAVA_MAX` (17–24 in `build.conf`), ignoring `JAVA_HOME` if it points at
+something unusable. `--doctor` shows the full list.
+
+If nothing in range is installed, get [Temurin 21](https://adoptium.net/temurin/releases/?version=21)
+and point at it in `build.local.conf`:
+
+```bash
+JAVA_HOME="C:/Program Files/Eclipse Adoptium/jdk-21.0.5+11"
+```
+
+If you ever upgrade the Gradle wrapper to 9.1+, raise `JAVA_MAX` to 25 to match.
 
 ### "SDK XML file of version 4 was encountered"
 

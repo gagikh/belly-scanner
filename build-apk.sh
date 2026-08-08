@@ -10,10 +10,11 @@
 #   ./build-apk.sh --release    unsigned release APK (sign it before Play)
 #   ./build-apk.sh --bundle     release AAB for the Play Store
 #   ./build-apk.sh --accept-licenses   accept the Android SDK licences, then build
+#   ./build-apk.sh --doctor     list every JDK found and stop
 #
 set -euo pipefail
 
-INSTALL=0; CLEAN=0; RELEASE=0; BUNDLE=0; ACCEPT_LICENSES=0
+INSTALL=0; CLEAN=0; RELEASE=0; BUNDLE=0; ACCEPT_LICENSES=0; DOCTOR=0
 
 _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=build-lib.sh
@@ -25,6 +26,7 @@ while [ $# -gt 0 ]; do
     --install)     INSTALL=1 ;;
     --clean)       CLEAN=1 ;;
     --accept-licenses) ACCEPT_LICENSES=1 ;;
+    --doctor)      DOCTOR=1 ;;
     --release)     RELEASE=1 ;;
     --bundle)      BUNDLE=1; RELEASE=1 ;;
     --app-id)      APP_ID="$2"; shift ;;
@@ -79,11 +81,15 @@ if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
     [ -n "$guess" ] && [ -d "$guess" ] && { SDK="$guess"; break; }
   done
 fi
-[ -n "$SDK" ] && [ -d "$SDK" ] || die \
-"Android SDK not found.
+if [ -n "$SDK" ] && [ -d "$SDK" ]; then
+  info "SDK  $SDK"
+elif [ "$DOCTOR" = "1" ]; then
+  warn "Android SDK not found"      # keep going: the whole point of --doctor is to report
+else
+  die "Android SDK not found.
     Install Android Studio (https://developer.android.com/studio), open it once so it
     downloads the SDK, then re-run. Or set ANDROID_HOME to an existing SDK folder."
-info "SDK  $SDK"
+fi
 
 # --- JDK: Android Studio bundles one, wherever it happens to be installed ---
 detect_java || true
@@ -92,20 +98,44 @@ if [ -n "$JAVA_DIR" ] && [ -d "$JAVA_DIR/bin" ]; then
   # Gradle and the JVM launcher need this in native form, not /c/...
   export JAVA_HOME="$(native_path "$JAVA_DIR")"
   info "JDK  $JAVA_HOME (Java $(java_major "$JAVA_DIR" 2>/dev/null || echo '?'))"
-  if [ -n "$JAVA_REJECTED" ]; then
-    info "skipped $JAVA_REJECTED - outside the Java $JAVA_MIN-$JAVA_MAX range Gradle supports"
+  if [ "$JAVA_OUT_OF_RANGE" = "1" ]; then
+    warn "This JDK is outside the Java $JAVA_MIN-$JAVA_MAX range Android tooling expects."
+    warn "Trying anyway. If Gradle says 'Unsupported class file major version',"
+    warn "install JDK 17 or 21 and set JAVA_HOME in build.local.conf."
+  elif [ -n "$JAVA_REJECTED" ]; then
+    info "skipped $JAVA_REJECTED - outside the Java $JAVA_MIN-$JAVA_MAX range"
   fi
-else
-  msg="No usable JDK found. Gradle needs Java $JAVA_MIN to $JAVA_MAX."
-  if [ -n "$JAVA_REJECTED" ]; then
-    msg="$msg
-    Ignored $JAVA_REJECTED - too new for Gradle, which fails on it with
-    'Unsupported class file major version'."
-  fi
-  die "$msg
-    Install JDK 17 or 21 (Android Studio bundles one), then set JAVA_HOME,
+elif [ "$DOCTOR" != "1" ]; then
+  die "No JDK found at all.
+    Install Android Studio (it bundles one), or set JAVA_HOME,
     or put the path in build.local.conf next to this script:
       JAVA_HOME=/path/to/Android Studio/jbr"
+fi
+
+# --- doctor: show every JDK found, then stop ---
+if [ "$DOCTOR" = "1" ]; then
+  cyan "JDKs found (Gradle needs Java $JAVA_MIN-$JAVA_MAX)"
+  if [ "${#JAVA_CANDIDATES[@]}" -eq 0 ]; then
+    echo "    none"
+  else
+    printf '%s\n' "${JAVA_CANDIDATES[@]}" | sort -t'|' -k1,1n -u | while IFS='|' read -r v p; do
+      mark="  "
+      [ "$v" != "?" ] && [ "$v" -ge "$JAVA_MIN" ] 2>/dev/null && [ "$v" -le "$JAVA_MAX" ] 2>/dev/null && mark="ok"
+      printf '    [%s] Java %-3s %s\n' "$mark" "$v" "$p"
+    done
+  fi
+  cyan "Chosen"
+  echo "    JAVA_HOME = ${JAVA_HOME:-<none>}"
+  [ "$JAVA_OUT_OF_RANGE" = "1" ] && echo "    (out of range - Gradle will probably fail)"
+  cyan "Gradle wrapper"
+  if [ -f "$AND/gradle/wrapper/gradle-wrapper.properties" ]; then
+    grep distributionUrl "$AND/gradle/wrapper/gradle-wrapper.properties" | sed 's/^/    /'
+  else
+    echo "    not generated yet (run a build first)"
+  fi
+  cyan "Android SDK"
+  echo "    ${SDK:-<not found>}"
+  exit 0
 fi
 
 # --- SDK packages and licences ---
@@ -309,6 +339,28 @@ if [ -f "$ROOT/keystore.properties" ]; then
 elif [ "$RELEASE" = "1" ]; then
   warn "No keystore.properties found - this release build will be UNSIGNED and will not install."
   warn "See BUILD.md, or just use the debug build for testing."
+fi
+
+# Pin Gradle to the JDK we chose. Relying on JAVA_HOME alone isn't enough: a
+# Gradle daemon started earlier on a different JDK gets reused, so the build can
+# fail on a JVM the script never selected.
+if [ -n "${JAVA_HOME:-}" ]; then
+  GP="$AND/gradle.properties"
+  touch "$GP"
+  grep -v '^org\.gradle\.java\.home=' "$GP" > "$GP.tmp" 2>/dev/null || true
+  mv -f "$GP.tmp" "$GP" 2>/dev/null || true
+  printf 'org.gradle.java.home=%s\n' "$JAVA_HOME" >> "$GP"
+
+  # if the JDK changed since last time, kill stale daemons
+  STAMP="$AND/.last-java-home"
+  if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$JAVA_HOME" ]; then
+    if [ -f "$AND/gradlew" ] || [ -f "$AND/gradlew.bat" ]; then
+      info "JDK changed - stopping old Gradle daemons"
+      if [ "$WINHOST" = "1" ]; then ( cd "$AND" && cmd //c gradlew.bat --stop >/dev/null 2>&1 ) || true
+      else ( cd "$AND" && ./gradlew --stop >/dev/null 2>&1 ) || true; fi
+    fi
+    printf '%s' "$JAVA_HOME" > "$STAMP"
+  fi
 fi
 
 # -------------------------------------------------------------------- sync ---

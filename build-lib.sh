@@ -42,6 +42,8 @@ esac
 
 # set when a JDK was found but rejected as the wrong version, so callers can explain
 JAVA_REJECTED=""
+JAVA_OUT_OF_RANGE=0
+JAVA_CANDIDATES=()
 
 # POSIX path -> native (C:/style), which Gradle accepts and .properties files need
 native_path() {
@@ -73,10 +75,13 @@ win_drives() {
 # ------------------------------------------------------------- jdk discovery ---
 # Gradle refuses to run on a JDK newer than it understands, with the memorable
 # "Unsupported class file major version NN" (69 = Java 25, 68 = 24, 67 = 23,
-# 66 = 22, 65 = 21, 61 = 17). Android tooling is happy on 17 or 21, so we pick a
-# JDK in that window rather than whatever happens to be first on PATH.
+# 66 = 22, 65 = 21, 61 = 17).
+#
+# The ceiling is set by the Gradle version, not by Android: Capacitor currently
+# pins Gradle 8.14.x, which runs on Java 17-24 and dies on 25. JDK 25 support
+# arrived in Gradle 9.1. If the wrapper is upgraded, raise JAVA_MAX to match.
 JAVA_MIN="${JAVA_MIN:-17}"
-JAVA_MAX="${JAVA_MAX:-21}"
+JAVA_MAX="${JAVA_MAX:-24}"
 
 # Major version of the JDK at $1, or nothing if it won't run
 java_major() {
@@ -99,9 +104,11 @@ java_major() {
 # on an unusable JDK just produces a baffling error later.
 detect_java() {
   local cand jh drive best="" best_v=0 v
+  local fallback="" fallback_v=0
   local -a candidates=()
   JAVA_FOUND=""
   JAVA_REJECTED=""
+  JAVA_OUT_OF_RANGE=0
 
   jh="$(posix_path "${JAVA_HOME:-}")"
   if [ -n "$jh" ] && [ -d "$jh/bin" ]; then
@@ -109,7 +116,10 @@ detect_java() {
     if [ -n "$v" ] && [ "$v" -ge "$JAVA_MIN" ] && [ "$v" -le "$JAVA_MAX" ]; then
       JAVA_FOUND="$jh"; return 0
     fi
+    # keep it as a fallback: an explicitly-set JAVA_HOME is still better than
+    # refusing to build at all, and Gradle may well cope
     JAVA_REJECTED="$jh (Java ${v:-?})"
+    fallback="$jh"; fallback_v="${v:-0}"
   fi
 
   # Android Studio's bundled JDK, wherever the app happens to live.
@@ -140,6 +150,29 @@ detect_java() {
     done
   done
 
+  # common standalone JDK locations, so a Temurin/Corretto/Zulu install counts
+  if [ "$WINHOST" = "1" ]; then
+    while IFS= read -r drive; do
+      [ -n "$drive" ] || continue
+      for base in "$drive/Program Files/Java" "$drive/Program Files/Eclipse Adoptium" \
+                  "$drive/Program Files/Amazon Corretto" "$drive/Program Files/Zulu" \
+                  "$drive/Program Files/Microsoft"; do
+        [ -d "$base" ] || continue
+        for cand in "$base"/*; do
+          [ -d "$cand/bin" ] && candidates+=("$cand")
+        done
+      done
+    done <<< "$(win_drives)"
+  else
+    for base in /usr/lib/jvm /Library/Java/JavaVirtualMachines "$HOME/.sdkman/candidates/java"; do
+      [ -d "$base" ] || continue
+      for cand in "$base"/*; do
+        [ -d "$cand/bin" ]              && candidates+=("$cand")
+        [ -d "$cand/Contents/Home/bin" ] && candidates+=("$cand/Contents/Home")
+      done
+    done
+  fi
+
   # a plain JDK on PATH
   if command -v javac >/dev/null 2>&1; then
     cand="$(dirname "$(dirname "$(command -v javac)")")"
@@ -150,18 +183,35 @@ detect_java() {
     [ -d "$cand/bin" ] && candidates+=("$cand")
   fi
 
+  # remember everything we saw, so --doctor can show it
+  JAVA_CANDIDATES=()
+  for cand in "${candidates[@]}"; do
+    v="$(java_major "$cand" 2>/dev/null || true)"
+    JAVA_CANDIDATES+=("${v:-?}|$cand")
+  done
+
   # pick the newest JDK that's still within the supported window
   for cand in "${candidates[@]}"; do
     v="$(java_major "$cand" 2>/dev/null || true)"
     [ -n "$v" ] || continue
-    if [ "$v" -ge "$JAVA_MIN" ] && [ "$v" -le "$JAVA_MAX" ] && [ "$v" -gt "$best_v" ]; then
-      best="$cand"; best_v="$v"
-    elif [ -z "$JAVA_REJECTED" ]; then
-      JAVA_REJECTED="$cand (Java $v)"
+    if [ "$v" -ge "$JAVA_MIN" ] && [ "$v" -le "$JAVA_MAX" ]; then
+      [ "$v" -gt "$best_v" ] && { best="$cand"; best_v="$v"; }
+    else
+      [ -z "$JAVA_REJECTED" ] && JAVA_REJECTED="$cand (Java $v)"
+      [ "$v" -gt "$fallback_v" ] && { fallback="$cand"; fallback_v="$v"; }
     fi
   done
 
-  [ -n "$best" ] && { JAVA_FOUND="$best"; return 0; }
+  if [ -n "$best" ]; then JAVA_FOUND="$best"; return 0; fi
+
+  # Nothing ideal. Use whatever we have and let the caller warn — refusing to
+  # build would be worse than trying, and the version window is only a guess at
+  # what this Gradle accepts.
+  if [ -n "$fallback" ]; then
+    JAVA_FOUND="$fallback"
+    JAVA_OUT_OF_RANGE=1
+    return 0
+  fi
   return 1
 }
 
