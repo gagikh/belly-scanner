@@ -279,8 +279,8 @@ It also writes the browser-tab icons into `icons/`, which `index.html` and
 To change the artwork, edit `tools/make-icons.js` and re-run it:
 
 ```bash
-npm i @napi-rs/canvas
-node tools/make-icons.js
+npm install
+npm run icons
 ```
 
 Output is **deterministic**: the speckle uses a seeded generator, reset before each
@@ -356,3 +356,84 @@ The debug APK is for your own phone only. For the store you still need to:
 5. If your Play account is a personal one created after November 2023: run a closed
    test with **12 testers opted in for 14 continuous days** before you can apply for
    production access.
+
+---
+
+## Testing the vision code without a phone
+
+The camera pipeline can be exercised headlessly. `tools/cv-testbench.js` loads
+`index.html` in jsdom, replaces the camera with a frame sequence, and calls the same
+functions the app calls — it is not a reimplementation, so a pass here means the
+algorithm works and any phone-only failure is the camera, not the logic.
+
+```bash
+npm install            # once: installs the dev-only tooling
+npm run clips          # render the test clips
+npm test               # run them all
+node tools/cv-testbench.js pan     # or just one
+```
+
+The app itself has **no dependencies** — `index.html` is standalone. `package.json`
+exists only for these tools (`@napi-rs/canvas` for drawing, `jsdom` for the headless
+page), and `node_modules/` is gitignored.
+
+If a tool reports *"native binding missing"* after a successful `npm install`, that's a
+[known npm bug with optional dependencies](https://github.com/npm/cli/issues/4828), not
+your setup:
+
+```bash
+npm run reinstall      # rm -rf node_modules package-lock.json && npm install --include=optional
+```
+
+### Prefer real imagery
+
+Synthetic pixels miss real sensor noise, skin and lighting. But a real *video* has no
+ground truth, so it can only tell you "looks wrong", never "drifted 20 px". The middle
+ground gives you both — **a real photograph, animated by us**:
+
+```bash
+node tools/make-test-clips.js --source belly.jpg --navel 0.5,0.55
+```
+
+Real skin, real grain, real navel; the motion is ours, so the truth stays exact.
+`--navel` gives the navel position as fractions of the image, which enables
+navel-accuracy scoring; tracking works without it. The `flat` clip is skipped in this
+mode, since you can't remove texture from someone's actual skin.
+
+Any torso photo works — your own, or free stock from Pexels, Pixabay or Unsplash. Point
+`--source` at the file; nothing is downloaded automatically and images stay out of the
+repo.
+
+### The clips
+
+| Clip | What it checks |
+|---|---|
+| `pan` | ordinary slow movement across the tummy |
+| `zoom` | moving the phone closer — the case template matching can't handle |
+| `shake` | fast jitter, larger than the search radius |
+| `lighting` | phone still, exposure ramping: must **not** be read as motion |
+| `flat` | featureless skin: the tracker should refuse rather than invent motion (synthetic only) |
+
+### Fully real footage
+
+```bash
+node tools/cv-testbench.js --video clip.mp4
+node tools/cv-testbench.js --video https://cdn.example.com/clip.mp4
+```
+
+ffmpeg extracts the frames, and reads URLs directly — a linked clip needs no manual
+download. It must be a link to the **video file itself** (`…/something.mp4`), not the
+page it's embedded in: a YouTube or Pexels page URL won't work, but the download-link
+target will.
+
+Useful as a final sanity check on real motion blur and rolling shutter, but with no
+ground truth only navel-detection and lock rates mean anything — tracking error can't be
+computed, because nothing knows how far the camera really moved. Keep downloaded files
+out of the repo; `testdata/` is gitignored.
+
+### node_modules and mixed operating systems
+
+`@napi-rs/canvas` ships a compiled binary per platform. If the project folder is shared
+between Windows and Linux (a VM, WSL, or a synced drive), whichever OS installed last
+wins and the other gets *"native binding missing"*. Run `npm run reinstall` on the side
+you're currently using, or keep a separate checkout per OS.

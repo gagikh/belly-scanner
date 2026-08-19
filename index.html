@@ -359,14 +359,16 @@
   // ------------------------------------------------------------------
   var TUNE_DEFAULTS = {
     navelScore: -5,    // navel accepted when its centre-surround score is below this
-    maskK: 0.2,        // body threshold = -maskK x std-dev of brightness
+    maskBias: 0,       // nudge the automatic body threshold, in std-devs
+    maskSep: 0.40,     // anything below this fraction of lit-skin brightness is background
     flowConf: 0.05,    // reject a motion estimate below this confidence
     flowTex: 5,        // reject it if the patch has less texture than this
     showMask: 0
   };
   var TUNE_SPEC = [
     { k: "navelScore", label: "navel ≤", min: -25, max: -0.5, step: 0.5 },
-    { k: "maskK",      label: "mask k",      min: 0,   max: 1.2,  step: 0.05 },
+    { k: "maskBias",   label: "mask bias",  min: -1.5, max: 1.5, step: 0.05 },
+    { k: "maskSep",    label: "bg level",   min: 0.1, max: 0.8,  step: 0.02 },
     { k: "flowConf",   label: "conf ≥", min: 0,   max: 0.4,  step: 0.01 },
     { k: "flowTex",    label: "tex ≥",  min: 0,   max: 30,   step: 1 }
   ];
@@ -386,7 +388,7 @@
   loadTune();
 
   // live readings, for the panel
-  var dbg = { navelScore: 0, maskFrac: 0, fps: 0, dx: 0, dy: 0 };
+  var dbg = { navelScore: 0, maskFrac: 0, maskEta: 0, fps: 0, dx: 0, dy: 0 };
 
   var video = $("cam"), canvas = $("fx"), ctx = canvas.getContext("2d");
   var W = 0, H = 0, DPR = 1;
@@ -667,6 +669,7 @@
       trkCur[p] = v; sum += v;
     }
     var mean = sum / n;
+    lumMean = mean;               // kept: the mask needs absolute brightness back
     for (p = 0; p < n; p++) trkCur[p] -= mean;
     return true;
   }
@@ -702,11 +705,17 @@
     return n ? s / n : 1e9;
   }
 
-  // fit a parabola through three samples to get a sub-pixel minimum
+  // Sub-pixel minimum from three samples.
+  //
+  // This used to fit a parabola, which is correct for SSD but wrong for SAD:
+  // absolute differences give a V-shaped minimum, not a curved one, and fitting
+  // a parabola to a V systematically pulls the estimate toward zero. Measured
+  // on the test bench, that lost about 30% of every movement — the worms
+  // visibly lagged behind the belly. The V-fit below is the matching estimator.
   function subPixel(sm, s0, sp) {
-    var den = sm - 2 * s0 + sp;
+    var den = 2 * (Math.max(sm, sp) - s0);
     if (Math.abs(den) < 1e-6) return 0;
-    return clamp(0.5 * (sm - sp) / den, -1, 1);
+    return clamp((sm - sp) / den, -1, 1);
   }
 
   // ------------------------------------------------------------------
@@ -769,51 +778,162 @@
     }
   }
 
+  // Otsu's method: choose the brightness split that best separates two classes,
+  // rather than a fixed offset from the mean. A fixed offset cannot cope with a
+  // torch-lit belly — the middle is bright and the edges fall away, so a single
+  // global cut slices the darker edges off the body.
+  //
+  // Otsu always returns *a* split, even for an image containing only one thing.
+  // So we also measure separability (between-class variance over total). When
+  // the two "classes" aren't really distinct, the frame is all belly, and the
+  // honest answer is that everything is body.
+  function otsuThreshold(src) {
+    var BINS = 64, LO = -96, HI = 96, span = HI - LO;
+    var hist = new Float64Array(BINS), n = TW * TH, i, b;
+    for (i = 0; i < n; i++) {
+      b = (((src[i] - LO) / span) * BINS) | 0;
+      hist[b < 0 ? 0 : (b > BINS - 1 ? BINS - 1 : b)]++;
+    }
+    var total = n, sum = 0;
+    for (b = 0; b < BINS; b++) sum += b * hist[b];
+
+    var wB = 0, sumB = 0, best = -1, bestB = 0;
+    for (b = 0; b < BINS; b++) {
+      wB += hist[b];
+      if (!wB) continue;
+      var wF = total - wB;
+      if (!wF) break;
+      sumB += b * hist[b];
+      var mB = sumB / wB, mF = (sum - sumB) / wF;
+      var between = wB * wF * (mB - mF) * (mB - mF);
+      if (between > best) { best = between; bestB = b; }
+    }
+
+    var mean = sum / total, varTot = 0;
+    for (b = 0; b < BINS; b++) { var d = b - mean; varTot += hist[b] * d * d; }
+    var eta = varTot > 0 ? best / (total * varTot) : 0;
+    return { thr: LO + ((bestB + 1) / BINS) * span, eta: eta };
+  }
+
+  // Flatten the lighting before deciding what's body.
+  //
+  // A torch makes the middle of a belly far brighter than its edges. Any single
+  // global threshold then cuts the dark edges off the body — which is exactly
+  // the "mask doesn't fit" problem. Subtracting a broad local average removes
+  // that slow gradient while leaving the sharp body/background step intact,
+  // because the averaging window is far wider than the edge.
+  var flat = null;
+  var lumMean = 128;          // average brightness of the last frame, 0-255
+  function flattenIllumination() {
+    var n = TW * TH;
+    if (!flat || flat.length !== n) flat = new Int16Array(n);
+    buildIntegral();                       // integral of trkCur, for fast box means
+    var rad = Math.max(4, Math.round(Math.min(TW, TH) / 3));
+    for (var y = 0; y < TH; y++) {
+      var y0 = Math.max(0, y - rad), y1 = Math.min(TH, y + rad + 1);
+      for (var x = 0; x < TW; x++) {
+        var x0 = Math.max(0, x - rad), x1 = Math.min(TW, x + rad + 1);
+        var area = (x1 - x0) * (y1 - y0);
+        var local = boxSum(x0, y0, x1, y1) / (area || 1);
+        // 0.75 rather than 1.0: full subtraction would also flatten the genuine
+        // body/background difference, leaving only edges
+        flat[y * TW + x] = trkCur[y * TW + x] - 0.75 * local;
+      }
+    }
+  }
+
   function buildBodyMask() {
     var n = TW * TH, i;
     if (!mask || mask.length !== n) { mask = new Uint8Array(n); maskStack = new Int32Array(n); maskTmp = null; }
 
+    flattenIllumination();
+    var src = flat;
+
     var s2 = 0;
-    for (i = 0; i < n; i++) s2 += trkCur[i] * trkCur[i];
+    for (i = 0; i < n; i++) s2 += src[i] * src[i];
     var sd = Math.sqrt(s2 / n) || 1;
-    var thr = -TUNE.maskK * sd;     // trkCur is zero-mean, so 0 is average brightness
 
-    for (i = 0; i < n; i++) mask[i] = trkCur[i] > thr ? 1 : 0;
-    despeckle();
-    despeckle();
-
-    // seed at the centre, or the nearest lit pixel to it
-    var cx = TW >> 1, cy = TH >> 1, seed = -1;
-    for (var rad = 0; rad < 12 && seed < 0; rad++) {
-      for (var dy = -rad; dy <= rad && seed < 0; dy++) {
-        for (var dx = -rad; dx <= rad; dx++) {
-          var x = cx + dx, y = cy + dy;
-          if (x < 0 || y < 0 || x >= TW || y >= TH) continue;
-          if (mask[y * TW + x] === 1) { seed = y * TW + x; break; }
-        }
-      }
+    // Carve the background out, rather than trying to find the body.
+    //
+    // Deciding "which of these two brightness classes is the body" is guesswork
+    // when a torch-lit belly is itself bright in the middle and dark at the
+    // edges. But background has a property the belly doesn't: it is much darker
+    // than the flattened average AND it reaches in from the edge of the frame.
+    // Flood-filling darkness inward from the border can never punch a hole in
+    // the middle of a tummy, which was the visible failure — and if the belly
+    // fills the view, nothing qualifies and the whole frame stays body.
+    // The level is set relative to lit skin, not to frame statistics.
+    //
+    // A σ-based threshold cannot work here: when a dark room fills most of the
+    // frame it inflates σ and drags the mean down with it, so the room itself
+    // never falls far enough below the mean to be caught — the more background
+    // there is, the less likely it is to be found. Measuring against a high
+    // percentile instead gives a fixed anchor. p90 is skin lit by the torch
+    // whatever else is in shot, and anything under about 40% of that brightness
+    // is not skin.
+    var lo = 255, hi = -255;
+    for (i = 0; i < n; i++) { if (trkCur[i] < lo) lo = trkCur[i]; if (trkCur[i] > hi) hi = trkCur[i]; }
+    var HB = 64, lhist = new Int32Array(HB), span = (hi - lo) || 1;
+    for (i = 0; i < n; i++) {
+      var hb = (((trkCur[i] - lo) / span) * (HB - 1)) | 0;
+      lhist[hb < 0 ? 0 : (hb > HB - 1 ? HB - 1 : hb)]++;
     }
-    if (seed < 0) { maskValid = false; return; }
+    var acc = 0, p90 = hi;
+    for (var hbin = 0; hbin < HB; hbin++) {
+      acc += lhist[hbin];
+      if (acc >= n * 0.90) { p90 = lo + (hbin / (HB - 1)) * span; break; }
+    }
+    // trkCur is zero-mean, so shift into brightness-above-black before scaling
+    var skin = p90 + lumMean;
+    var bgThr = (TUNE.maskSep * skin) - lumMean;
+    dbg.maskEta = TUNE.maskSep;
 
-    // flood fill outward from the seed
-    var sp = 0, kept = 0;
-    maskStack[sp++] = seed;
-    mask[seed] = 2;
+    for (i = 0; i < n; i++) mask[i] = 1;               // body until proven otherwise
+
+    var sp = 0, x, y, p;
+    function seedEdge(idx) {
+      if (mask[idx] === 1 && trkCur[idx] < bgThr) { mask[idx] = 0; maskStack[sp++] = idx; }
+    }
+    for (x = 0; x < TW; x++) { seedEdge(x); seedEdge((TH - 1) * TW + x); }
+    for (y = 0; y < TH; y++) { seedEdge(y * TW); seedEdge(y * TW + TW - 1); }
+
     while (sp > 0) {
-      var p = maskStack[--sp];
-      kept++;
+      p = maskStack[--sp];
       var px = p % TW, py = (p / TW) | 0;
-      if (px > 0        && mask[p - 1]  === 1) { mask[p - 1]  = 2; maskStack[sp++] = p - 1; }
-      if (px < TW - 1   && mask[p + 1]  === 1) { mask[p + 1]  = 2; maskStack[sp++] = p + 1; }
-      if (py > 0        && mask[p - TW] === 1) { mask[p - TW] = 2; maskStack[sp++] = p - TW; }
-      if (py < TH - 1   && mask[p + TW] === 1) { mask[p + TW] = 2; maskStack[sp++] = p + TW; }
+      if (px > 0      && mask[p - 1]  === 1 && trkCur[p - 1]  < bgThr) { mask[p - 1]  = 0; maskStack[sp++] = p - 1; }
+      if (px < TW - 1 && mask[p + 1]  === 1 && trkCur[p + 1]  < bgThr) { mask[p + 1]  = 0; maskStack[sp++] = p + 1; }
+      if (py > 0      && mask[p - TW] === 1 && trkCur[p - TW] < bgThr) { mask[p - TW] = 0; maskStack[sp++] = p - TW; }
+      if (py < TH - 1 && mask[p + TW] === 1 && trkCur[p + TW] < bgThr) { mask[p + TW] = 0; maskStack[sp++] = p + TW; }
     }
-    for (i = 0; i < n; i++) mask[i] = mask[i] === 2 ? 1 : 0;
+
+    // Was that a real background, or just the dim rim of a torch-lit belly?
+    //
+    // A room takes up a serious share of the frame; vignetting only ever nibbles
+    // a thin border. Rather than hunting for a threshold that separates the two
+    // — there isn't one, since the same darkness means different things — carve
+    // permissively and then throw the result away if it's merely a rim. That
+    // way an over-eager threshold can't eat the edge of a child's tummy.
+    var carved = 0;
+    for (i = 0; i < n; i++) if (!mask[i]) carved++;
+    if (carved < n * 0.08) {
+      for (i = 0; i < n; i++) mask[i] = 1;
+      dbg.maskFrac = 1;
+      maskValid = true;
+      return;
+    }
+
+    despeckle();
+    despeckle();
+
+    var kept = 0;
+    for (i = 0; i < n; i++) if (mask[i]) kept++;
 
     // if it covers almost nothing or almost everything, it isn't telling us anything
     var frac = kept / n;
     dbg.maskFrac = frac;
-    maskValid = frac > 0.12 && frac < 0.96;
+    // covering nearly everything is a valid answer now — the belly can fill the
+    // frame. Only a mask that found almost nothing is untrustworthy.
+    maskValid = frac > 0.12;
   }
 
   // thumbnail-space test
@@ -1236,7 +1356,61 @@
   // ------------------------------------------------------------------
   // WORMS
   // ------------------------------------------------------------------
-  function Worm(x, y) {
+  // ------------------------------------------------------------------
+  // SPECIES
+  //
+  // One generic worm can't say *why* it's there. Giving each junk food its own
+  // creature turns "you have 2 worms" into "the Fizz Gremlin came from the cola",
+  // which is the actual lesson. Each species differs in size, speed, wiggle and
+  // a drawing flourish, so they're told apart at a glance.
+  // ------------------------------------------------------------------
+  var SPECIES = {
+    fizz: {
+      key: "fizz", name: "Fizz Gremlin", the: "the Fizz Gremlin",
+      blurb: "It burps bubbles and never sits still.",
+      from: ["cola"],
+      speed: [30, 58], thick: [8, 12], nSeg: [9, 13], segLen: [6, 9],
+      wig: [3.6, 5.0], light: 70, bristle: 0.7, bubbles: true
+    },
+    grease: {
+      key: "grease", name: "Grease Blob", the: "the Grease Blob",
+      blurb: "Slow, heavy and a bit slimy.",
+      from: ["chips", "burger"],
+      speed: [7, 18], thick: [14, 20], nSeg: [8, 11], segLen: [8, 12],
+      wig: [1.0, 1.9], light: 52, bristle: 0, smear: true
+    },
+    sugar: {
+      key: "sugar", name: "Sugar Bug", the: "the Sugar Bug",
+      blurb: "Tiny, fast, and completely wired.",
+      from: ["candy", "donut", "ice cream"],
+      speed: [38, 70], thick: [6.5, 10], nSeg: [13, 18], segLen: [5.5, 8],
+      wig: [4.2, 5.8], light: 74, bristle: 1.5, jitter: true
+    }
+  };
+  var SPECIES_ORDER = ["fizz", "grease", "sugar"];
+
+  function speciesForFood(foodName) {
+    for (var k in SPECIES) {
+      if (SPECIES[k].from.indexOf(foodName) >= 0) return SPECIES[k];
+    }
+    return SPECIES.sugar;                    // sensible default for anything new
+  }
+
+  // Which creatures turn up, given what was actually eaten. Distinct species
+  // first, so two worms from two different foods look different.
+  function speciesForToday(n) {
+    var eatenJunk = junkEaten(), picked = [], seen = {};
+    for (var i = 0; i < eatenJunk.length; i++) {
+      var s = speciesForFood(eatenJunk[i].n);
+      if (!seen[s.key]) { seen[s.key] = 1; picked.push(s); }
+    }
+    if (!picked.length) picked.push(SPECIES.sugar);
+    var out = [];
+    for (var j = 0; j < n; j++) out.push(picked[j % picked.length]);
+    return out;
+  }
+
+  function Worm(x, y, species) {
     var sp = spawnPoint();
     // positions are in belly ("world") space, not screen space
     var p = toWorld(x != null ? x : sp.x, y != null ? y : sp.y);
@@ -1245,15 +1419,17 @@
     this.homeX = p.x;          // the spot on the belly it belongs to
     this.homeY = p.y;
     this.roam = rand(26, 46);  // how far it will stray from that spot
+    var S = species || SPECIES.sugar;
+    this.sp = S;
     this.dir = rand(0, Math.PI * 2);
-    this.speed = rand(16, 40);
-    this.nSeg = randInt(12, 18);
-    this.segLen = rand(7, 10.5);
-    this.thick = rand(9, 15);
+    this.speed = rand(S.speed[0], S.speed[1]);
+    this.nSeg = randInt(S.nSeg[0], S.nSeg[1]);
+    this.segLen = rand(S.segLen[0], S.segLen[1]);
+    this.thick = rand(S.thick[0], S.thick[1]);
     this.hue = rand(64, 104);
     this.sat = rand(34, 52);
     this.phase = rand(0, Math.PI * 2);
-    this.wig = rand(2.0, 3.4);
+    this.wig = rand(S.wig[0], S.wig[1]);
     this.grow = 0;              // 0 -> 1 pop-in
     this.dying = 0;             // 0 -> 1 fade-out
     this.dead = false;
@@ -1273,6 +1449,8 @@
 
     // wander: sine wiggle + gentle random steering
     this.dir += Math.sin(t * this.wig + this.phase) * dt * 2.4 + rand(-0.6, 0.6) * dt;
+    // the Sugar Bug is wired: extra darting on top of the normal wander
+    if (this.sp.jitter) this.dir += rand(-2.6, 2.6) * dt;
 
     // stay around the spot it was pinned to
     if (!this.dying) {
@@ -1336,7 +1514,7 @@
     for (var i = n - 1; i >= 0; i--) {
       var taper = 1 - Math.pow(i / n, 1.7);
       var r = Math.max(0.6, this.thick * taper * scale);
-      var lit = 62 + 16 * Math.sin(i * 0.9 + t * 5);
+      var lit = (this.sp.light || 62) + 16 * Math.sin(i * 0.9 + t * 5);
       c.fillStyle = "hsl(210,6%," + lit + "%)";
       c.beginPath();
       c.arc(spine[i].x, spine[i].y, r, 0, 6.2832);
@@ -1353,7 +1531,7 @@
       c.fill();
 
       // tiny leg bristles, like the caterpillar in an ultrasound
-      if (i % 2 === 0 && i < n - 2) {
+      if (this.sp.bristle > 0 && i % 2 === 0 && i < n - 2) {
         var nx = spine[i].x - spine[i + 1].x, ny = spine[i].y - spine[i + 1].y;
         var nl = Math.sqrt(nx * nx + ny * ny) || 1;
         var lx = -ny / nl, ly = nx / nl;
@@ -1364,10 +1542,47 @@
           var wob = Math.sin(t * 7 + i * 1.3 + (sgn > 0 ? 0 : 1.6)) * 0.28;
           c.beginPath();
           c.moveTo(spine[i].x + lx * r * 0.8 * sgn, spine[i].y + ly * r * 0.8 * sgn);
-          c.lineTo(spine[i].x + (lx * sgn + wob) * r * 1.75, spine[i].y + (ly * sgn + wob) * r * 1.75);
+          c.lineTo(spine[i].x + (lx * sgn + wob) * r * 1.75 * this.sp.bristle,
+                   spine[i].y + (ly * sgn + wob) * r * 1.75 * this.sp.bristle);
           c.stroke();
         }
       }
+    }
+
+    // ---- per-species flourish, so they read differently at a glance ----
+    if (this.sp.smear) {
+      // Grease Blob leaves an oily film behind it
+      c.save();
+      c.globalAlpha = alpha * 0.16;
+      c.fillStyle = "hsl(210,6%,80%)";
+      for (var g = 2; g < n; g += 3) {
+        c.beginPath();
+        c.arc(spine[g].x, spine[g].y, this.thick * scale * (1.5 - g / n), 0, 6.2832);
+        c.fill();
+      }
+      c.restore();
+    }
+
+    if (this.sp.bubbles) {
+      // Fizz Gremlin burps a little stream of bubbles
+      c.save();
+      var head = spine[0];
+      for (var b = 0; b < 5; b++) {
+        var ph = (t * 0.7 + b * 0.2 + this.phase) % 1;          // 0..1 rise
+        var br = this.thick * scale * (0.26 + 0.34 * ph);
+        var bx = head.x + Math.sin(ph * 5 + b * 1.7) * this.thick * 0.6 * scale;
+        var by = head.y - ph * this.thick * 3.6 * scale;
+        c.globalAlpha = alpha * (1 - ph * 0.85);
+        c.fillStyle = "rgba(226,240,255,0.30)";
+        c.beginPath(); c.arc(bx, by, br, 0, 6.2832); c.fill();
+        c.strokeStyle = "rgba(250,253,255,0.95)";
+        c.lineWidth = Math.max(0.9, br * 0.32);
+        c.stroke();
+        // the little glint that makes a circle read as a bubble
+        c.fillStyle = "rgba(255,255,255,0.9)";
+        c.beginPath(); c.arc(bx - br * 0.32, by - br * 0.34, Math.max(0.5, br * 0.22), 0, 6.2832); c.fill();
+      }
+      c.restore();
     }
 
     // head
@@ -1773,27 +1988,55 @@
     var who = activeName();
     var head, body;
 
+    // Name the creatures actually on screen, and the food each came from —
+    // "the Fizz Gremlin came from the cola" teaches far more than a worm count.
+    var cast = [], castSeen = {};
+    for (var ci = 0; ci < worms.length; ci++) {
+      var s = worms[ci].sp;
+      if (!castSeen[s.key]) { castSeen[s.key] = 1; cast.push(s); }
+    }
+    function culprits(sp) {                     // the ticked foods that species came from
+      return j.filter(function (f) { return sp.from.indexOf(f.n) >= 0; });
+    }
+    function castLine() {
+      return cast.map(function (sp) {
+        var from = culprits(sp);
+        return "<b>" + sp.name + "</b>" + (from.length ? " — from the " + listNames(from) : "");
+      }).join("<br>");
+    }
+    // With one creature but several junk foods, the others would go unmentioned —
+    // and the unmentioned one is exactly what a child will argue was fine.
+    function alsoEaten() {
+      var shown = {};
+      cast.forEach(function (sp) { culprits(sp).forEach(function (f) { shown[f.n] = 1; }); });
+      var rest = j.filter(function (f) { return !shown[f.n]; });
+      return rest.length ? "<br><br>The <b>" + listNames(rest) + "</b> didn't help either." : "";
+    }
+
     // what changed since the last scan is the whole point — lead with it
     if (res.first) {
       head = n === 0 ? "TUMMY IS CLEAR!" : (n === 1 ? "ONE WRIGGLER" : "TWO WRIGGLERS");
       body = n === 0
         ? "Nothing wriggling in " + who + "'s tummy at all. Keep eating like today and it stays that way."
-        : "Today " + who + " had <b>" + listNames(j) + "</b> — that's exactly what wrigglers like to eat.";
+        : "Look who turned up:<br><br>" + castLine() +
+          "<br><br>" + cast[0].blurb + alsoEaten();
     } else if (res.after < res.before) {
       head = n === 0 ? "THEY'RE ALL GONE! 🎉" : "ONE LEFT! 🎉";
-      body = who + " had a good day, so one wriggler packed up and left."
+      body = who + " had a good day, so one of them packed up and left."
            + (g.length ? " The <b>" + listNames(g) + "</b> did that." : "")
-           + (n > 0 ? "<br><br>One more good day and the last one goes too." : "");
+           + (n > 0 ? "<br><br>Still in there: " + castLine() +
+                      "<br><br>One more good day and it goes too." : "");
     } else if (res.after > res.before) {
       head = n === 1 ? "ONE MOVED IN" : "ANOTHER ONE MOVED IN";
-      body = "Today " + who + " had <b>" + listNames(j) + "</b>, and that brought a wriggler back."
+      body = "Today " + who + " had <b>" + listNames(j) + "</b>, and that brought one back:"
+           + "<br><br>" + castLine() + alsoEaten()
            + "<br><br>Nothing is ruined — one good day tomorrow and it leaves again.";
     } else if (n === 0) {
       head = "STILL CLEAR! ✨";
       body = "Another good day. Nothing has moved in.";
     } else {
       head = n === 1 ? "STILL ONE IN THERE" : "STILL TWO IN THERE";
-      body = "No change today." + (j.length ? " There was still <b>" + listNames(j) + "</b>." : "")
+      body = "No change today.<br><br>" + castLine()
            + "<br><br>One day with no more than one sugary thing and one of them leaves.";
     }
 
@@ -2197,13 +2440,16 @@
     worms = [];
     applyDiet();                 // works out today's count from the diet + the streak
     var n = wormTarget();
-    for (var i = 0; i < n; i++) worms.push(new Worm());
+    var cast = speciesForToday(n);
+    for (var i = 0; i < n; i++) worms.push(new Worm(null, null, cast[i]));
     buzz(n ? [80, 50, 80] : 40);
     if (n > 0) { sonarPing(); nextPingAt = performance.now() / 1000 + PING_EVERY; }
     var res = todayResult, improved = res && !res.first && res.after < res.before;
     if (n === 0) setStatus(improved ? "They're gone! ✨" : "Nothing wriggling in there ✨", "good");
-    else if (improved) setStatus("One left! Still " + n + " in there 🪱", "good");
-    else setStatus(n === 1 ? "Uh oh — there's one in there 🪱" : "Uh oh — two of them in there 🪱", "bad");
+    else if (improved) setStatus("One left! " + worms[0].sp.the + " is still there 🪱", "good");
+    else if (n === 1) setStatus("Uh oh — " + worms[0].sp.the + "! 🪱", "bad");
+    else if (worms[0].sp.key === worms[1].sp.key) setStatus("Uh oh — two " + worms[0].sp.name + "s! 🪱", "bad");
+    else setStatus("Uh oh — " + worms[0].sp.name + " AND " + worms[1].sp.name + "! 🪱", "bad");
     updateCount();
     // auto-keep the reveal so the other kid can see this exact scan later
     setTimeout(function () { if (MODE === "play") saveScan(); }, 1300);
@@ -2344,7 +2590,8 @@
     var lines = [
       "fps   " + dbg.fps.toFixed(0) + (lowQ ? " (lowQ)" : "") + "   thumb " + TW + "x" + TH,
       "navel " + dbg.navelScore.toFixed(1) + "  -> " + (navelManual ? "MANUAL" : (navOk ? "LOCK" : "no")),
-      "mask  " + (dbg.maskFrac * 100).toFixed(0) + "%  " + (maskValid ? "valid" : "INVALID"),
+      "mask  " + (dbg.maskFrac * 100).toFixed(0) + "%  " + (maskValid ? "valid" : "INVALID") +
+        "  sep " + (dbg.maskEta || 0).toFixed(2),
       "conf  " + flowConf.toFixed(3) + "   tex " + flowTex.toFixed(1),
       "flow  " + dbg.dx.toFixed(2) + ", " + dbg.dy.toFixed(2),
       "drift " + camX.toFixed(0) + ", " + camY.toFixed(0),
@@ -2489,6 +2736,60 @@
       if (MODE === "scanning") startNoise();
     }
   });
+
+  // ------------------------------------------------------------------
+  // Test seam. tools/cv-testbench.js sets window.__TUMMY_TEST__ before the
+  // page loads and then drives the vision code directly with recorded or
+  // synthetic frames. Completely inert in the shipped app.
+  // ------------------------------------------------------------------
+  if (window.__TUMMY_TEST__) {
+    window.__tummy = {
+      resize: resize,
+      trackerInit: trackerInit,
+      trackerGrab: trackerGrab,
+      buildBodyMask: buildBodyMask,
+      detectNavel: detectNavel,
+      updateNavel: updateNavel,
+      navelScreen: navelScreen,
+      onBody: onBody,
+      setTune: function (o) { for (var k in o) TUNE[k] = o[k]; },
+      setAnchor: function (sx, sy) { anchorW.x = sx + camX; anchorW.y = sy + camY; },
+
+      resetTracking: function () {
+        trackerInit();
+        camX = 0; camY = 0; camTX = 0; camTY = 0;
+        navel = null; navelManual = null; navelMiss = 0;
+        anchorW.x = W * 0.5; anchorW.y = H * 0.5;
+      },
+
+      // one tracking iteration, no easing: the bench wants raw accuracy
+      trackStep: function () {
+        var asx = anchorW.x - camX, asy = anchorW.y - camY;
+        var f = trackerEstimate(asx / (W || 1) * TW, asy / (H || 1) * TH);
+        if (f) {
+          camTX -= f.x * (W / TW);
+          camTY -= f.y * (H / TH);
+        }
+        camX = camTX; camY = camTY;
+        return f;
+      },
+
+      state: function () {
+        return {
+          W: W, H: H, TW: TW, TH: TH,
+          camX: camX, camY: camY,
+          navel: navel ? { x: navel.x, y: navel.y } : null,
+          navelScreen: navelScreen(),
+          maskValid: maskValid,
+          maskFrac: dbg.maskFrac,
+          flowConf: flowConf,
+          flowTex: flowTex,
+          navelScore: dbg.navelScore,
+          tune: JSON.parse(JSON.stringify(TUNE))
+        };
+      }
+    };
+  }
 
   resize();
   loadProfiles();

@@ -1,126 +1,181 @@
-# Plans — parked ideas and open questions
+# Plan
 
-Things considered and deliberately deferred, with the reasoning, so we don't
-re-litigate them from scratch later. Ordered roughly by expected value.
-
----
-
-## Parked
-
-### Recognise which child is being scanned, automatically
-**Status:** postponed — hard, and the manual picker already solves it.
-
-With three kids, whoever gets scanned second would inherit the first one's streak.
-That's fixed: each child is a profile with its own history, chosen on the home screen.
-
-Doing it automatically means face recognition (camera is pointed at a belly, not a face)
-or identifying a child by their torso, which is unreliable, and it means storing
-biometric data about minors — which drags in a large amount of privacy law and would
-force the "collects nothing" privacy policy to become something much more complicated.
-The manual tap costs one second and carries none of that.
-
-**Revisit if:** picking the child every time becomes annoying in practice. A cheaper
-middle ground would be remembering the last child scanned and defaulting to the next one
-in the list, or a "scan all three" mode that walks through them in turn.
+Goal: publish to Google Play, and keep improving the app while the store process
+grinds through its waiting periods.
 
 ---
 
-### Mask matching for tracking
-**Status:** promising, unstarted — the best answer to the zoom problem.
+## The critical path is a 14-day clock, not code
 
-The body silhouette is strongly visible, and matching it has a real advantage over the
-current approach:
+If your Play account is a personal one created after November 2023, production access
+requires **12 testers opted in to a closed test for 14 continuous days**. Nothing about
+the app affects that number. It is pure waiting time.
 
-- Current tracking integrates frame-to-frame motion, so error accumulates with nothing
-  to correct it, and it only measures translation.
-- Template matching a saved patch was rejected because moving the phone closer rescales
-  the patch and the match fails.
-- **Mask statistics dodge both problems.** The mask centroid gives absolute position, not
-  an integral, so drift cannot accumulate. The square root of the mask area gives scale
-  directly, which is exactly the zoom that breaks template matching. Second moments give
-  approximate rotation.
+**So the first action is to open a closed test — today, with whatever build you have.**
+Everything in Phase B and C can happen during those two weeks. Every day you delay
+publishing is a day added to the end, not the middle.
 
-Likely architecture: keep optical flow for fine, fast motion, and use mask centroid,
-area and orientation as a slow absolute correction — dead reckoning corrected by GPS.
+Target API 36 is already set, which covers the 31 August 2026 requirement for new
+submissions.
 
-**Caveats to solve:** the centroid shifts when the torso is partly out of frame, so it
-needs a "mask touches the frame edge" check before trusting it. The mask itself is
-currently a single global brightness threshold, which is the weakest link and would
-probably need an adaptive local threshold first.
-
-**Revisit when:** we have real `TRK` / drift numbers from a phone. No point optimising
-tracking that might already be adequate.
+```
+Day 0    open closed test, recruit 12 testers        <- do this first
+Day 0-14 Phase B and C work, pushing updates to the closed track
+Day 14   apply for production access
+```
 
 ---
 
-### ~~An alert sound when a worm is found~~
-**Status:** done — two-note sonar ping, synthesised, repeating every 3.2s while a worm
-is on screen. Silent the moment the tummy is clear or the scan ends. Reasoning below.
+## Irreversible decisions — settle these before the first upload
 
-Tuning lives in one place if it needs adjusting: `sonarPing()` for the tone, `PING_EVERY`
-for the interval, and the `noiseGain` values for the scanner hiss.
+These cannot be changed after publishing, so they're worth ten minutes now.
 
-Currently the app makes only the scanner hiss, by deliberate choice.
-
-**Recommendation: synthesise it rather than bundle an audio file.** The app is one
-self-contained HTML file with an existing WebAudio engine. A downloaded clip means an
-asset to ship, a licence to comply with and attribution to track, for a sound we can
-generate in about fifteen lines. Synthesised also means we can tune it precisely rather
-than picking the least-bad clip from a library.
-
-**The real question is how alarming it should be.** A harsh medical-alarm sound attached
-to "there is something wrong inside your body" is a plausible way to make a young child
-anxious about eating, which is the exact opposite of the point. Suggested instead: a soft
-two-note sonar ping at the moment of the reveal — noticeable and a bit dramatic, over in
-half a second, closer to a game sound than a hospital one. And nothing repeating: a
-looping alarm while a worm is on screen would be genuinely distressing.
-
-**Open:** confirm the tone, then implement.
+| Decision | Current | Note |
+|---|---|---|
+| **Application ID** | `com.tummyscanner.app` | Permanent. A new id means a new listing with zero installs. Use a domain you control if you have one. |
+| **App name** | Tummy Scanner | Changeable later, but it's what testers see first. |
+| **Upload key** | generated by `build-release.sh` | Losing it means never updating this listing again. Back it up off-machine before you upload. |
 
 ---
 
-### Rotation and zoom in tracking
-**Status:** unstarted, partly superseded by mask matching above.
+## Phase A — ship blockers
 
-Block matching sees translation only. Rotate the phone and the worms stay upright; move
-closer and they don't grow. The gyroscope measures roll well and is unused for this, so a
-hybrid — vision for position, gyro for rotation — would be cheap. Zoom is better handled
-by mask area, per the section above.
+Small, all required before submission.
+
+1. **`versionCode` handling.** Play rejects an upload whose `versionCode` isn't higher
+   than the last one, and nothing currently increments it — every build is `1`. Needs
+   `versionCode`/`versionName` in `build.conf`, injected at build time. *Small, but it
+   will block your second upload, so do it before the first.*
+2. **Screenshots.** At least two phone-sized. Best taken from a real scan with the debug
+   build; the reveal screen and the result screen tell the story.
+3. **Store listing copy.** Must state plainly that this is a **pretend / entertainment**
+   scanner. Fake body-scanner apps get rejected under Play's Deceptive Behavior policy
+   when the listing implies real detection. This is the single most likely rejection
+   reason for this app — worth over-stating rather than under-stating.
+4. **Content rating and Families questionnaire.** The app targets children, so this
+   determines whether it needs the Families programme's extra requirements.
+5. **Data safety form.** Answers already written in `BUILD.md`; it's "no data collected"
+   throughout.
 
 ---
 
-### Translation (Armenian / Russian)
-**Status:** unstarted.
+## Phase B — tracking
 
-Every string is inline in `index.html`. Lifting them into one table would make adding a
-language an afternoon's work, and matters for a Play listing beyond English speakers.
+Chosen to proceed without on-device measurements. Worth being explicit about what that
+means: the designs below are sound in principle, but I can't tell you whether they fix
+anything on your phone, and it's possible current tracking is already good enough. If
+something feels worse after a change, that's the reason — say so and we revert.
+
+### B1. Mask-centroid tracking (the big one)
+
+Optical flow integrates frame-to-frame motion, so error accumulates with nothing to
+correct it, and it only measures translation. Template matching was rejected because
+moving the phone closer rescales the patch.
+
+Mask statistics dodge both problems:
+
+- **Centroid** gives absolute position, not an integral — drift cannot accumulate.
+- **√area** gives scale directly, which is exactly the zoom that breaks template
+  matching. Worms could grow as you move closer.
+- **Second moments** give approximate rotation.
+
+Architecture: keep optical flow for fine, fast motion; use mask centroid/area as a slow
+absolute correction. Dead reckoning corrected by GPS.
+
+Prerequisite: the mask is currently a single global brightness threshold, which is the
+weakest link — see B2.
+
+Risk: the centroid shifts when the torso is partly out of frame, so it needs a "mask
+touches the frame edge" check before being trusted.
+
+### ~~B2. Adaptive threshold for the body mask~~ — done
+
+Measured on the bench: the mask covered **63% of a frame that was 100% belly**, which is
+the "doesn't fit the tummy" problem. Three changes fixed it:
+
+- **Illumination flattening** — subtract a broad local average, so the torch's bright
+  middle and dark edges stop looking like two different materials.
+- **Carve the background instead of finding the body** — flood darkness inward from the
+  frame edge. This can never punch a hole in the middle of a tummy, which was the
+  visible symptom.
+- **Threshold relative to lit skin (40% of the 90th percentile), not to σ.** A σ-based
+  rule provably cannot work: when background fills most of the frame it inflates σ and
+  drags the mean with it, so the more background there is, the less findable it becomes.
+
+Result: 0 points of error on all-belly clips, 3 points on the torso-edge clip.
+
+### ~~B2b. Sub-pixel tracking bias~~ — done
+
+The sub-pixel step fitted a parabola, which is right for SSD but wrong for SAD: absolute
+differences give a V-shaped minimum, and fitting a curve to a V pulls the estimate toward
+zero. It was losing ~30% of every movement — the worms lagged the belly. With the
+matching V-fit, a 78px pan now reads as 77px instead of 58px.
+
+### B3. Adaptive local threshold — superseded
+
+A single global brightness cut handles evenly lit skin and struggles with the lighting
+gradient a torch actually produces. A local/adaptive threshold would make the mask —
+and therefore B1, and navel detection — substantially more reliable. **Do this before
+B1**; B1 is only as good as the mask underneath it.
+
+### B3. Gyro for rotation
+
+Block matching can't see rotation: rotate the phone and the worms stay stubbornly
+upright. The gyroscope measures roll well and is currently only used for the blur and
+shake indicator. Cheap to add, and each sensor does what it's good at.
 
 ---
 
-## Done, for reference
+## Phase C — product depth
+
+### C1. Translation (Armenian / Russian)
+
+Every string is inline in `index.html`. Lifting them into one table makes adding a
+language an afternoon's work. For a public listing beyond English speakers this is
+probably the highest-value item in this phase.
+
+### C2. First-run onboarding
+
+Nothing explains the flow to a new user. Testers will open it, see a diet checklist with
+no context, and guess. Three short cards before the first scan would fix it.
+
+### C3. Editable food list
+
+The twelve foods are hardcoded and Western-default. Parents should be able to add what
+their kids actually eat.
+
+### C4. History view
+
+Streaks are stored for 30 days but only today's is ever shown. A simple week strip —
+seven dots, green for good days — would make progress visible and give a reason to open
+the app on a day you're not scanning.
+
+### C5. Low-end performance recovery
+
+`lowQ` latches permanently once triggered; it never recovers if the phone was only
+briefly busy. Minor, but it means one hiccup permanently degrades the render.
+
+---
+
+## Deliberately not doing
+
+**Automatic child recognition.** Identifying which kid is being scanned means face or
+torso recognition — storing biometric data about minors, which would dismantle the
+"collects nothing" privacy position and drag in significant regulation, all to save one
+tap. The manual picker is the right answer.
+
+---
+
+## Done
 
 - Ultrasound rendering, worms clipped inside the beam
-- Manual scan reveal — the scan never stops on its own
+- Manual reveal — the scan never stops on its own
 - Optical-flow tracking with confidence gating
-- Navel detection, with tap-to-place override (essential for toddlers)
-- Body mask, keeping worms on the tummy
-- On-device CV tuning panel
+- Navel detection with tap-to-place override (essential for toddlers)
+- Body mask keeping worms on the tummy
+- On-device CV tuning panel (`--doctor` equivalent for the vision layer)
 - Per-child profiles with independent daily streaks
-- Launcher icons and Play Store art
-- Privacy policy
-
----
-
-## Before Google Play
-
-- [x] App icon and adaptive icon at all densities
-- [x] Feature graphic, 1024x500
-- [x] Privacy policy, hosted
-- [ ] Screenshots — at least 2, phone-sized
-- [ ] Signed release AAB (see `BUILD.md`)
-- [ ] Data safety form — answer "no data collected" throughout
-- [ ] Content rating questionnaire
-- [ ] Store listing must say **pretend / entertainment**, never imply real detection
-- [ ] 12 testers opted in for 14 continuous days, if the Play account is personal and
-      was created after November 2023
-- [ ] Target API 36, required for new submissions from 31 August 2026
+- Sonar ping, repeating while a worm is on screen
+- Launcher icons, favicon, web manifest, Play store art
+- Privacy policy, hosted alongside the app
+- Build scripts: debug, signed release, automatic key generation, toolchain diagnosis

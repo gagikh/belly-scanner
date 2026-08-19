@@ -1,7 +1,7 @@
 /*
  * Draws the app icon and Play Store art, and writes the Android density set.
  *
- *   npm i @napi-rs/canvas
+ *   npm install
  *   node tools/make-icons.js
  *
  * Output lands in android-assets/, which build-apk.ps1 copies into the
@@ -9,7 +9,25 @@
  */
 const fs = require("fs");
 const path = require("path");
-const { createCanvas } = require("@napi-rs/canvas");
+// Dependencies are dev-only; the app itself needs none. A bare "Cannot find
+// module" stack trace isn't a useful thing to hand someone, so say what to do.
+function need(mod) {
+  try { return require(mod); }
+  catch (e) {
+    if (/native binding/i.test(e.message)) {
+      // npm sometimes skips the platform-specific binary of a native package
+      console.error(`\n${mod} installed but its native binary is missing.`);
+      console.error("This is a known npm bug with optional dependencies. Fix:\n");
+      console.error("    rm -rf node_modules package-lock.json");
+      console.error("    npm install --include=optional\n");
+    } else {
+      console.error(`\nMissing dependency: ${mod}`);
+      console.error("Run this once, from the project folder:\n\n    npm install\n");
+    }
+    process.exit(1);
+  }
+}
+const { createCanvas } = need("@napi-rs/canvas");
 
 const OUT = path.join(__dirname, "..", "android-assets");
 

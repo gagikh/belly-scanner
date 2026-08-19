@@ -14,3 +14,6 @@ node_modules/
 
 # Machine-specific overrides (JDK/SDK paths) — never committed
 build.local.conf
+
+# Generated test clips — rebuilt by tools/make-test-clips.js
+tools/testdata/

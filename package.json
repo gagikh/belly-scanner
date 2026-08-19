@@ -1,0 +1,21 @@
+{
+  "name": "tummy-scanner-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Build and test tooling for Tummy Scanner. The app itself is index.html and has no dependencies at all \u2014 these packages are only needed to generate icons and to run the vision tests headlessly.",
+  "scripts": {
+    "icons": "node tools/make-icons.js",
+    "clips": "node tools/make-test-clips.js",
+    "test": "node tools/app-tests.js && node tools/cv-testbench.js",
+    "test:cv": "node tools/cv-testbench.js",
+    "reinstall": "rm -rf node_modules package-lock.json && npm install --include=optional",
+    "test:app": "node tools/app-tests.js"
+  },
+  "devDependencies": {
+    "@napi-rs/canvas": "^1.0.5",
+    "jsdom": "^30.0.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
