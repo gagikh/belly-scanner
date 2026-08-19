@@ -352,7 +352,10 @@
     <div id="homeState" class="sub" style="font-size:14px; color:#a9e6c4; min-height:1.2em;"></div>
     <button class="bigbtn" id="go">SCAN THIS BELLY</button>
     <button class="linkbtn" id="openGallery">📁 Saved scans (<span id="galcount">0</span>)</button>
-    <p class="sub" style="font-size:12px; opacity:.45; max-width:28ch;">A pretend X-ray game. Not a real medical scanner.</p>
+    <p class="sub" style="font-size:12px; opacity:.45; max-width:28ch;">
+      A pretend X-ray game. Not a real medical scanner.<br>
+      <span id="verLabel"></span>
+    </p>
     <div id="err" class="hidden"></div>
   </div>
 
@@ -3126,6 +3129,14 @@
       }
     };
   }
+
+  // Kept in step with build.conf by the build script. Shown on the home screen
+  // so a tester reporting a problem can say which build they were on.
+  var APP_VERSION = "2.0";
+  (function () {
+    var el = $("verLabel");
+    if (el) el.textContent = "v" + APP_VERSION;
+  })();
 
   resize();
   loadProfiles();

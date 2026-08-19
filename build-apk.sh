@@ -289,6 +289,33 @@ else
   warn "android-assets/ not found - run 'node tools/make-icons.js' to generate icons"
 fi
 
+# --- version ---
+# Capacitor generates versionCode 1 / versionName "1.0" once, and never touches
+# them again. Left alone, the second upload to Play is rejected.
+node -e '
+const fs = require("fs");
+const [p, name, code] = [process.argv[1], process.argv[2], process.argv[3]];
+let g = fs.readFileSync(p, "utf8");
+const before = g;
+g = g.replace(/versionCode\s+\d+/, "versionCode " + code);
+g = g.replace(/versionName\s+"[^"]*"/, `versionName "${name}"`);
+if (!/versionCode\s+\d+/.test(g) || !/versionName\s+"/.test(g)) {
+  console.error("    ! could not find versionCode/versionName in build.gradle");
+  process.exit(1);
+}
+if (g !== before) fs.writeFileSync(p, g);
+console.log(`    \x1b[90mversion ${name} (code ${code})\x1b[0m`);
+' "$AND/app/build.gradle" "${VERSION_NAME:-1.0}" "${VERSION_CODE:-1}"
+
+# keep the version shown inside the app in step with the one Play sees
+node -e '
+const fs = require("fs");
+const [p, name] = [process.argv[1], process.argv[2]];
+let h = fs.readFileSync(p, "utf8");
+const out = h.replace(/var APP_VERSION = "[^"]*"/, `var APP_VERSION = "${name}"`);
+if (out !== h) fs.writeFileSync(p, out);
+' "$PROJ/www/index.html" "${VERSION_NAME:-1.0}"
+
 # --- app label ---
 STRINGS="$RES/values/strings.xml"
 if [ -f "$STRINGS" ]; then

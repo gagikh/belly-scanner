@@ -290,6 +290,25 @@ speckle pattern.)
 
 ---
 
+## Versions
+
+`build.conf` holds both:
+
+```bash
+VERSION_NAME="2.0"     # what users see
+VERSION_CODE=2         # what Play checks
+```
+
+**Bump `VERSION_CODE` before every upload.** Play rejects a bundle whose code isn't
+higher than the last one you sent, and a number can never be reused — even if you delete
+the release that used it. `VERSION_NAME` is free text and can be anything.
+
+The build script writes both into the generated `build.gradle`, and keeps the version
+label on the app's home screen in step, so a tester reporting a problem can tell you
+which build they were on.
+
+---
+
 ## Signing a release build
 
 Debug APKs install on your own phone but Play will not accept them, and an *unsigned*
