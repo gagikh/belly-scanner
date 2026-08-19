@@ -6,14 +6,18 @@
   "scripts": {
     "icons": "node tools/make-icons.js",
     "clips": "node tools/make-test-clips.js",
-    "test": "node tools/app-tests.js && node tools/cv-testbench.js",
+    "test": "./test.sh",
     "test:cv": "node tools/cv-testbench.js",
     "reinstall": "rm -rf node_modules package-lock.json && npm install --include=optional",
-    "test:app": "node tools/app-tests.js"
+    "test:app": "node tools/app-tests.js",
+    "test:layout": "node tools/responsive-test.js",
+    "test:layout:shots": "node tools/responsive-test.js --shots",
+    "test:all": "./test.sh --all"
   },
   "devDependencies": {
     "@napi-rs/canvas": "^1.0.5",
-    "jsdom": "^30.0.1"
+    "jsdom": "^30.0.1",
+    "puppeteer": "^24.0.0"
   },
   "engines": {
     "node": ">=20"

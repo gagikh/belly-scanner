@@ -367,10 +367,19 @@ functions the app calls — it is not a reimplementation, so a pass here means t
 algorithm works and any phone-only failure is the camera, not the logic.
 
 ```bash
-npm install            # once: installs the dev-only tooling
-npm run clips          # render the test clips
-npm test               # run them all
-node tools/cv-testbench.js pan     # or just one
+./test.sh              # everything offline: syntax, app logic, vision
+./test.sh --layout     # also real-browser layout (downloads Chrome once)
+./test.sh --all        # plus layout screenshots
+```
+
+It installs dependencies and renders the test clips on first run, so a fresh checkout
+needs nothing else. Exit code is non-zero if anything fails, so it works as a pre-commit
+hook. Individual pieces:
+
+```bash
+node tools/app-tests.js            # app logic only
+node tools/cv-testbench.js pan     # one vision clip
+npm run clips                      # re-render the clips
 ```
 
 The app itself has **no dependencies** — `index.html` is standalone. `package.json`
@@ -437,3 +446,26 @@ out of the repo; `testdata/` is gitignored.
 between Windows and Linux (a VM, WSL, or a synced drive), whichever OS installed last
 wins and the other gets *"native binding missing"*. Run `npm run reinstall` on the side
 you're currently using, or keep a separate checkout per OS.
+
+---
+
+## Checking layout on phone-sized screens
+
+jsdom has no layout engine, so the other tests can't see a button pushed off the
+screen. `tools/responsive-test.js` drives headless Chrome instead, with a fake camera
+so the scan screens render, and asserts on measured geometry at eight viewport sizes —
+from 320x568 up to a tablet, plus landscape.
+
+```bash
+npm install            # puppeteer is a dev dependency
+npm run test:layout
+npm run test:layout:shots     # also writes screenshots/layout/
+```
+
+Each size is checked on four screens (home, diet, scan, result) for horizontal
+overflow, tap targets under 40px, content clipped without a scrollbar, and whether the
+primary button is actually on screen.
+
+**Note:** this one needs to download Chrome on first run, so it won't work on a machine
+without network access to Google's CDN. The other two test files have no such
+requirement.

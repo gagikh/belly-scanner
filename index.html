@@ -51,6 +51,20 @@
     .screen { gap: 8px; }
     .blob { display: none; }
     .sub { font-size: 13px; }
+
+    /* On a short screen — landscape especially — the primary action ends up
+       below the fold. The screen scrolls, but a button you have to go looking
+       for is a button that doesn't get pressed. Sticking it to the bottom of
+       its own scroll area keeps it reachable at any height without having to
+       redesign each screen for landscape. */
+    #go, #toScan, #again, #revealBtn, #doneBtn {
+      position: sticky; bottom: 2px; z-index: 3;
+    }
+    /* the diet list is the tallest thing we have; give it the space.
+       Drop the instructions but keep #dietTally — it also carries .sub, and
+       it's the "good day / sugary day" feedback, which is the point. */
+    #diet h1 { font-size: 19px; }
+    #diet .sub:not(#dietTally) { display: none; }
   }
   @media (max-width: 360px) {
     .chip { padding: 7px 10px; font-size: 13px; border-radius: 13px; }
@@ -139,14 +153,20 @@
   #tray .label { font-size: 13px; opacity: .8; letter-spacing: .5px; }
   .foods { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
   .food {
-    border: none; border-radius: 18px; padding: 10px 0 8px;
+    border: none; border-radius: 18px; padding: 10px 2px 8px;
     background: rgba(255,255,255,.09);
     display: flex; flex-direction: column; align-items: center; gap: 3px;
     font: inherit; color: #eaf6ff;
     transition: transform .08s, background .15s;
+    /* Grid items default to min-width:auto, so a long label like "ice cream"
+       can force its column wider and push the whole grid off screen. */
+    min-width: 0;
   }
   .food .emoji { font-size: clamp(24px, 7.4vw, 34px); line-height: 1; }
-  .food .name { font-size: 10px; opacity: .72; }
+  .food .name {
+    font-size: 10px; opacity: .72;
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .food:active { transform: scale(.88); background: rgba(255,255,255,.2); }
 
   /* ---------- OVERLAYS ---------- */
@@ -175,7 +195,13 @@
 
   #diet { background: radial-gradient(circle at 50% 25%, #16324f 0%, #0b1220 72%); }
   #dietFoods { grid-template-columns: repeat(4, 1fr); gap: 7px; }
-  @media (max-height: 700px) { #dietFoods { grid-template-columns: repeat(6, 1fr); } }
+  /* On a short screen, save height by making each tile shorter — not by adding
+     columns. Six columns on a 360px phone leaves ~48px cells, which is the bare
+     minimum for an adult finger and too small for a child's. */
+  @media (max-height: 700px) {
+    #dietFoods .food { padding: 6px 2px 5px; gap: 1px; }
+    #dietFoods .emoji { font-size: clamp(20px, 6vw, 28px); }
+  }
   @media (max-width: 340px) { #dietFoods { grid-template-columns: repeat(3, 1fr); } }
   .food.on {
     background: rgba(255,255,255,.26);
@@ -1369,22 +1395,22 @@
       key: "fizz", name: "Fizz Gremlin", the: "the Fizz Gremlin",
       blurb: "It burps bubbles and never sits still.",
       from: ["cola"],
-      speed: [30, 58], thick: [8, 12], nSeg: [9, 13], segLen: [6, 9],
-      wig: [3.6, 5.0], light: 70, bristle: 0.7, bubbles: true
+      speed: [30, 58], thick: [12, 16], nSeg: [9, 13], segLen: [6, 9],
+      wig: [3.6, 5.0], light: 70, bristle: 0.7, bubbles: true, shape: "gremlin"
     },
     grease: {
       key: "grease", name: "Grease Blob", the: "the Grease Blob",
       blurb: "Slow, heavy and a bit slimy.",
       from: ["chips", "burger"],
       speed: [7, 18], thick: [14, 20], nSeg: [8, 11], segLen: [8, 12],
-      wig: [1.0, 1.9], light: 52, bristle: 0, smear: true
+      wig: [1.0, 1.9], light: 52, bristle: 0, smear: true, shape: "blob"
     },
     sugar: {
       key: "sugar", name: "Sugar Bug", the: "the Sugar Bug",
       blurb: "Tiny, fast, and completely wired.",
       from: ["candy", "donut", "ice cream"],
       speed: [38, 70], thick: [6.5, 10], nSeg: [13, 18], segLen: [5.5, 8],
-      wig: [4.2, 5.8], light: 74, bristle: 1.5, jitter: true
+      wig: [4.2, 5.8], light: 74, bristle: 1.5, jitter: true, shape: "worm"
     }
   };
   var SPECIES_ORDER = ["fizz", "grease", "sugar"];
@@ -1485,6 +1511,137 @@
     }
   };
 
+  // Two eyes and a mouth, placed on whatever body shape drew them. Shared so
+  // every creature has the same face and reads as the same family.
+  Worm.prototype.drawFace = function (c, t, hx, hy, hr) {
+    var ca = Math.cos(this.dir), sa = Math.sin(this.dir);
+    var perpX = -sa, perpY = ca;
+    var blink = (Math.sin(t * 1.6 + this.phase) > 0.965) ? 0.18 : 1;
+    for (var e = -1; e <= 1; e += 2) {
+      var ex = hx + ca * hr * 0.42 + perpX * hr * 0.46 * e;
+      var ey = hy + sa * hr * 0.42 + perpY * hr * 0.46 * e;
+      c.fillStyle = "#fdfff4";
+      c.beginPath(); c.ellipse(ex, ey, hr * 0.36, hr * 0.36 * blink, 0, 0, 6.2832); c.fill();
+      if (blink > 0.5) {
+        c.fillStyle = "#141414";
+        c.beginPath(); c.arc(ex + ca * hr * 0.12, ey + sa * hr * 0.12, hr * 0.18, 0, 6.2832); c.fill();
+      }
+    }
+    c.strokeStyle = "rgba(20,10,10,.75)";
+    c.lineWidth = Math.max(1, hr * 0.17);
+    c.lineCap = "round";
+    c.beginPath();
+    c.arc(hx + ca * hr * 0.55, hy + sa * hr * 0.55, hr * 0.34, this.dir - 2.5, this.dir - 0.6);
+    c.stroke();
+  };
+
+  // ---- Grease Blob: one wobbling mass, no segments at all ----
+  Worm.prototype.drawBlob = function (c, t, scale) {
+    var r = this.thick * scale * 1.5;
+    var hx = this.x, hy = this.y;
+
+    // trailing smear, thickest nearest the body
+    c.save();
+    c.globalAlpha = c.globalAlpha * 0.22;
+    c.fillStyle = "hsl(210,6%,58%)";
+    for (var s = 2; s < this.pts.length; s += 3) {
+      var p = this.pts[s];
+      c.beginPath();
+      c.ellipse(p.x, p.y, r * (1 - s / this.pts.length) * 0.9, r * (1 - s / this.pts.length) * 0.7,
+                this.dir, 0, 6.2832);
+      c.fill();
+    }
+    c.restore();
+
+    // wobbling outline: a circle with a slow sine ripple around it
+    c.beginPath();
+    for (var a = 0; a <= 6.2832 + 0.01; a += 0.22) {
+      var wob = 1 + 0.16 * Math.sin(a * 3 + t * 2.2 + this.phase) + 0.09 * Math.sin(a * 5 - t * 1.6);
+      var px = hx + Math.cos(a) * r * wob * 1.12;
+      var py = hy + Math.sin(a) * r * wob * 0.86;
+      if (a === 0) c.moveTo(px, py); else c.lineTo(px, py);
+    }
+    c.closePath();
+    var g = c.createRadialGradient(hx - r * 0.3, hy - r * 0.35, r * 0.1, hx, hy, r * 1.3);
+    g.addColorStop(0, "hsl(210,6%,72%)");
+    g.addColorStop(1, "hsl(210,6%,46%)");
+    c.fillStyle = g;
+    c.fill();
+    c.strokeStyle = "rgba(10,14,20,0.5)";
+    c.lineWidth = Math.max(1, r * 0.09);
+    c.stroke();
+
+    // greasy highlight
+    c.fillStyle = "rgba(250,252,255,0.42)";
+    c.beginPath();
+    c.ellipse(hx - r * 0.32, hy - r * 0.36, r * 0.3, r * 0.19, -0.5, 0, 6.2832);
+    c.fill();
+
+    this.drawFace(c, t, hx, hy, r * 0.62);
+  };
+
+  // ---- Fizz Gremlin: a round bulb with antennae and a stream of bubbles ----
+  Worm.prototype.drawGremlin = function (c, t, scale) {
+    var r = this.thick * scale * 1.3;
+    var bounce = Math.sin(t * 7 + this.phase) * r * 0.10;
+    var hx = this.x, hy = this.y + bounce;
+    var ca = Math.cos(this.dir), sa = Math.sin(this.dir);
+
+    // antennae, each ending in a bubble
+    c.strokeStyle = "rgba(232,242,252,0.85)";
+    c.lineWidth = Math.max(1, r * 0.14);
+    c.lineCap = "round";
+    for (var k = -1; k <= 1; k += 2) {
+      var ang = this.dir - Math.PI / 2 + k * 0.5;
+      var tipX = hx + Math.cos(ang) * r * 1.75;
+      var tipY = hy + Math.sin(ang) * r * 1.75 + Math.sin(t * 5 + k) * r * 0.14;
+      c.beginPath(); c.moveTo(hx + Math.cos(ang) * r * 0.7, hy + Math.sin(ang) * r * 0.7);
+      c.lineTo(tipX, tipY); c.stroke();
+      c.fillStyle = "rgba(240,248,255,0.8)";
+      c.beginPath(); c.arc(tipX, tipY, r * 0.17, 0, 6.2832); c.fill();
+    }
+
+    // squat pear-shaped body, wider at the bottom
+    c.beginPath();
+    c.ellipse(hx, hy, r * 1.0, r * 1.15, this.dir, 0, 6.2832);
+    var g = c.createRadialGradient(hx - r * 0.3, hy - r * 0.4, r * 0.1, hx, hy, r * 1.4);
+    g.addColorStop(0, "hsl(210,6%,82%)");
+    g.addColorStop(1, "hsl(210,6%,58%)");
+    c.fillStyle = g; c.fill();
+    c.strokeStyle = "rgba(10,14,20,0.5)";
+    c.lineWidth = Math.max(1, r * 0.1); c.stroke();
+
+    // stubby feet, so it reads as a creature rather than an egg
+    c.fillStyle = "hsl(210,6%,62%)";
+    for (var f = -1; f <= 1; f += 2) {
+      c.beginPath();
+      c.ellipse(hx - ca * r * 0.9 + (-sa) * r * 0.45 * f,
+                hy - sa * r * 0.9 + ca * r * 0.45 * f,
+                r * 0.3, r * 0.19, this.dir, 0, 6.2832);
+      c.fill();
+    }
+
+    this.drawFace(c, t, hx, hy, r * 0.8);
+
+    // the stream of bubbles that names it
+    for (var b = 0; b < 5; b++) {
+      var ph = (t * 0.7 + b * 0.2 + this.phase) % 1;
+      var br = r * (0.20 + 0.26 * ph);
+      var bx = hx + Math.sin(ph * 5 + b * 1.7) * r * 0.55;
+      var by = hy - r * 1.2 - ph * r * 2.6;
+      c.save();
+      c.globalAlpha = c.globalAlpha * (1 - ph * 0.85);
+      c.fillStyle = "rgba(226,240,255,0.30)";
+      c.beginPath(); c.arc(bx, by, br, 0, 6.2832); c.fill();
+      c.strokeStyle = "rgba(250,253,255,0.95)";
+      c.lineWidth = Math.max(0.9, br * 0.3);
+      c.stroke();
+      c.fillStyle = "rgba(255,255,255,0.9)";
+      c.beginPath(); c.arc(bx - br * 0.32, by - br * 0.34, Math.max(0.5, br * 0.22), 0, 6.2832); c.fill();
+      c.restore();
+    }
+  };
+
   Worm.prototype.draw = function (c, t) {
     var pop = this.grow * this.grow * (3 - 2 * this.grow);   // smoothstep
     var alpha = (1 - this.dying) * pop;
@@ -1496,6 +1653,24 @@
 
     c.save();
     c.globalAlpha = alpha;
+
+    // Each species has its own silhouette. Parameter tweaks alone made three
+    // creatures that all read as "the same worm", which defeats the point of
+    // naming them after different foods.
+    if (this.sp.shape === "blob" || this.sp.shape === "gremlin") {
+      c.save();
+      c.globalAlpha = alpha * 0.28;
+      c.fillStyle = "#000";
+      c.beginPath();
+      c.ellipse(this.x + 2.5, this.y + 5, this.thick * scale * 1.5, this.thick * scale * 1.1, 0, 0, 6.2832);
+      c.fill();
+      c.restore();
+
+      if (this.sp.shape === "blob") this.drawBlob(c, t, scale);
+      else this.drawGremlin(c, t, scale);
+      c.restore();
+      return;
+    }
 
     // soft shadow under the worm
     c.save();
@@ -1677,7 +1852,7 @@
     { e: "💧", n: "water",   junk: false },
     { e: "🥕", n: "carrots", junk: false },
     { e: "🍓", n: "berries", junk: false },
-    { e: "🍚", n: "proper meal", junk: false },
+    { e: "🍚", n: "meal",   junk: false },
     { e: "🥤", n: "cola",    junk: true },
     { e: "🍟", n: "chips",   junk: true },
     { e: "🍬", n: "candy",   junk: true },

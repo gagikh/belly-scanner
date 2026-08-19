@@ -17,3 +17,6 @@ build.local.conf
 
 # Generated test clips — rebuilt by tools/make-test-clips.js
 tools/testdata/
+
+# layout screenshots are regenerable
+screenshots/layout/
