@@ -200,6 +200,11 @@ mkdir -p "$PROJ/www"
 cp "$SRC" "$PROJ/www/index.html"
 info "$(basename "$SRC") -> www/index.html"
 
+# index.html references these; without them the WebView logs 404s for the
+# favicon and manifest on every launch.
+[ -d "$ROOT/icons" ] && { cp -r "$ROOT/icons" "$PROJ/www/"; info "icons/ -> www/"; }
+[ -f "$ROOT/manifest.webmanifest" ] && cp "$ROOT/manifest.webmanifest" "$PROJ/www/"
+
 # androidScheme https gives the WebView a secure origin, which getUserMedia needs
 cat > "$PROJ/capacitor.config.json" <<JSON
 {

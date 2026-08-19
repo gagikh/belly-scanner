@@ -97,6 +97,8 @@
   .bigbtn.red:active { box-shadow: 0 3px 0 #a32a13; }
 
   .blob { font-size: clamp(56px, 20vw, 110px); filter: drop-shadow(0 6px 18px rgba(0,0,0,.6)); animation: bob 2.6s ease-in-out infinite; }
+  #startArt { line-height: 0; }
+  #startArt svg { display: block; }
   @keyframes bob { 0%,100% { transform: translateY(0) rotate(-4deg);} 50% { transform: translateY(-14px) rotate(4deg);} }
 
   /* ---------- HUD ---------- */
@@ -317,7 +319,33 @@
 
   <!-- START -->
   <div class="screen" id="start">
-    <div class="blob">🫃</div>
+    <!-- The app's own artwork rather than an emoji. The one used before read as
+         the pregnant-man emoji, which is both off-message and easy to misread
+         on a belly-scanner app. Inline SVG so it survives into the APK, where
+         only index.html is copied. -->
+    <div class="blob" id="startArt" aria-hidden="true">
+      <svg viewBox="0 0 100 100" width="1em" height="1em" role="img">
+        <defs>
+          <linearGradient id="fanG" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#e2eaf4" stop-opacity=".95"/>
+            <stop offset="1" stop-color="#607086" stop-opacity=".55"/>
+          </linearGradient>
+        </defs>
+        <!-- ultrasound fan -->
+        <path d="M50 6 A 46 46 0 0 1 92 40 L 50 58 L 8 40 A 46 46 0 0 1 50 6 Z"
+              fill="url(#fanG)" transform="translate(0,6)"/>
+        <!-- one creature inside it -->
+        <g stroke="#141c26" stroke-width="2.4" stroke-linejoin="round">
+          <circle cx="62" cy="52" r="9" fill="#cfd8e6"/>
+          <circle cx="52" cy="55" r="9.5" fill="#d8e0ec"/>
+          <circle cx="41" cy="56" r="10.5" fill="#e8eef7"/>
+        </g>
+        <circle cx="37" cy="53" r="3.1" fill="#fdfff8"/>
+        <circle cx="36" cy="53" r="1.5" fill="#151a22"/>
+        <circle cx="44" cy="51" r="3.1" fill="#fdfff8"/>
+        <circle cx="43" cy="51" r="1.5" fill="#151a22"/>
+      </svg>
+    </div>
     <h1>TUMMY<br>SCANNER 3000</h1>
     <p class="sub">Who's getting scanned?</p>
     <div id="who"></div>
@@ -1795,6 +1823,118 @@
   };
 
   // ------------------------------------------------------------------
+  // ------------------------------------------------------------------
+  // GUT HELPERS
+  //
+  // Until now only the bad things had a face, so a clean tummy showed an empty
+  // screen — the weakest possible reward for the behaviour we most want. These
+  // are the good guys: little caped microbes that turn up when a child eats
+  // well. They're also true. A gut really does host helpful bacteria that
+  // thrive on fibre and suffer under sugar, so "your helpers are winning" is a
+  // fair description rather than a fib.
+  //
+  // Deliberately cartoon microbes, not tiny humans: a person standing inside a
+  // child's abdomen on an ultrasound-styled screen edges back toward "this is
+  // showing something real", which is the impression the whole app avoids.
+  var helpers = [];
+
+  function Helper(x, y) {
+    var sp = spawnPoint();
+    var p = toWorld(x != null ? x : sp.x, y != null ? y : sp.y);
+    this.x = p.x; this.y = p.y;
+    this.homeX = p.x; this.homeY = p.y;
+    this.r = rand(12, 17);
+    this.phase = rand(0, 6.2832);
+    this.spin = rand(-0.5, 0.5);
+    this.driftA = rand(0, 6.2832);
+    this.grow = 0;
+  }
+
+  Helper.prototype.update = function (dt, t) {
+    if (this.grow < 1) this.grow = Math.min(1, this.grow + dt * 1.8);
+    // a slow, contented wander around its spot — nothing frantic
+    this.driftA += rand(-0.8, 0.8) * dt;
+    var tx = this.homeX + Math.cos(this.driftA) * 16;
+    var ty = this.homeY + Math.sin(this.driftA) * 16;
+    this.x += (tx - this.x) * Math.min(1, dt * 1.2);
+    this.y += (ty - this.y) * Math.min(1, dt * 1.2);
+  };
+
+  Helper.prototype.draw = function (c, t) {
+    var pop = this.grow * this.grow * (3 - 2 * this.grow);
+    if (pop <= 0.01) return;
+    var r = this.r * pop;
+    var bob = Math.sin(t * 2.2 + this.phase) * r * 0.18;
+    var hx = this.x, hy = this.y + bob;
+    var tilt = Math.sin(t * 1.4 + this.phase) * 0.25 + this.spin;
+
+    c.save();
+    c.globalAlpha = c.globalAlpha * pop;
+
+    // cape, streaming behind and rippling
+    c.save();
+    c.translate(hx, hy);
+    c.rotate(tilt);
+    c.beginPath();
+    c.moveTo(0, -r * 0.5);
+    c.quadraticCurveTo(-r * 1.5, -r * 0.2 + Math.sin(t * 5 + this.phase) * r * 0.25,
+                       -r * 1.25, r * 1.15);
+    c.quadraticCurveTo(-r * 0.5, r * 0.55, 0, r * 0.5);
+    c.closePath();
+    var cg = c.createLinearGradient(0, -r, -r * 1.4, r);
+    cg.addColorStop(0, "rgba(238,246,255,0.85)");
+    cg.addColorStop(1, "rgba(150,168,190,0.6)");
+    c.fillStyle = cg;
+    c.fill();
+    c.strokeStyle = "rgba(12,18,26,0.4)";
+    c.lineWidth = Math.max(0.7, r * 0.09);
+    c.stroke();
+    c.restore();
+
+    // round body, brighter than anything else on screen so it reads as good
+    var g = c.createRadialGradient(hx - r * 0.3, hy - r * 0.35, r * 0.1, hx, hy, r * 1.25);
+    g.addColorStop(0, "hsl(150,12%,92%)");
+    g.addColorStop(1, "hsl(150,10%,66%)");
+    c.fillStyle = g;
+    c.beginPath(); c.arc(hx, hy, r, 0, 6.2832); c.fill();
+    c.strokeStyle = "rgba(12,18,26,0.45)";
+    c.lineWidth = Math.max(0.8, r * 0.1);
+    c.stroke();
+
+    // face: two dots and a smile
+    var blink = (Math.sin(t * 1.7 + this.phase) > 0.97) ? 0.15 : 1;
+    c.fillStyle = "#12161c";
+    for (var e = -1; e <= 1; e += 2) {
+      c.beginPath();
+      c.ellipse(hx + r * 0.3 * e, hy - r * 0.12, r * 0.13, r * 0.13 * blink, 0, 0, 6.2832);
+      c.fill();
+    }
+    c.strokeStyle = "#12161c";
+    c.lineWidth = Math.max(0.8, r * 0.1);
+    c.lineCap = "round";
+    c.beginPath();
+    c.arc(hx, hy + r * 0.1, r * 0.42, 0.35, Math.PI - 0.35);
+    c.stroke();
+
+    // a small twinkle, timed off the bob so a group doesn't flash in unison
+    var tw = Math.sin(t * 3 + this.phase * 2);
+    if (tw > 0.86) {
+      c.fillStyle = "rgba(255,255,255,0.9)";
+      c.beginPath();
+      c.arc(hx + r * 1.15, hy - r * 0.95, r * 0.16 * (tw - 0.86) * 7, 0, 6.2832);
+      c.fill();
+    }
+    c.restore();
+  };
+
+  // How many turn up: one per healthy thing eaten, with a bonus for a clear
+  // tummy. Eat nothing good and none appear — which is its own message.
+  function helperCount(wormCount) {
+    var good = goodEaten().length;
+    var n = Math.min(4, good) + (wormCount === 0 ? 2 : 0);
+    return Math.min(5, n);
+  }
+
   // particles (sparkles when a worm leaves)
   // ------------------------------------------------------------------
   var parts = [];
@@ -2215,6 +2355,17 @@
            + "<br><br>One day with no more than one sugary thing and one of them leaves.";
     }
 
+    // The helpers are the reward for eating well, so say what they are and
+    // what put them there — otherwise they're just decoration.
+    if (helpers.length) {
+      var goodNames = g.length ? " The <b>" + listNames(g) + "</b> brought them." : "";
+      body += "<br><br>💚 <b>" + helpers.length + " tummy helper" + (helpers.length === 1 ? "" : "s")
+            + "</b> in there too." + goodNames
+            + (n === 0 ? " They have the place to themselves." : " They're working on the rest.");
+    } else if (n > 0) {
+      body += "<br><br>💚 No tummy helpers showed up today — they come with fruit, veggies and water.";
+    }
+
     if (res.goodRun > 1) {
       body += "<br><br>🔥 <b>" + res.goodRun + " good days in a row.</b>";
     }
@@ -2522,11 +2673,13 @@
   // always look like they're actually in there.
   function renderScan(c, w, h, t, opts) {
     drawFeed(c, w, h);
-    if (opts.worms && worms.length) {
+    if (opts.worms && (worms.length || helpers.length)) {
       c.save();
       conePath(c, w, h, false); c.clip();
-      // worms hold their spot on the belly: shift them opposite to the view
+      // both hold their spot on the belly: shift them opposite to the view
       c.translate(-camX, -camY);
+      // helpers behind, so a creature is never hidden by one
+      for (var hi = 0; hi < helpers.length; hi++) helpers[hi].draw(c, t);
       for (var i = worms.length - 1; i >= 0; i--) worms[i].draw(c, t);
       c.restore();
     }
@@ -2593,6 +2746,7 @@
         worms[i].update(dt, t);
         if (worms[i].dead) worms.splice(i, 1);
       }
+      for (var hi = 0; hi < helpers.length; hi++) helpers[hi].update(dt, t);
       // keep pinging while something is in there, like a real sonar
       if (MODE === "play" && worms.length && t > nextPingAt) {
         sonarPing();
@@ -2617,10 +2771,17 @@
     var n = wormTarget();
     var cast = speciesForToday(n);
     for (var i = 0; i < n; i++) worms.push(new Worm(null, null, cast[i]));
+
+    // the good guys, one per healthy thing eaten
+    helpers = [];
+    var hn = helperCount(n);
+    for (var h = 0; h < hn; h++) helpers.push(new Helper());
+
     buzz(n ? [80, 50, 80] : 40);
     if (n > 0) { sonarPing(); nextPingAt = performance.now() / 1000 + PING_EVERY; }
     var res = todayResult, improved = res && !res.first && res.after < res.before;
-    if (n === 0) setStatus(improved ? "They're gone! ✨" : "Nothing wriggling in there ✨", "good");
+    if (n === 0 && hn > 0) setStatus("Your helpers have it all to themselves ✨", "good");
+    else if (n === 0) setStatus(improved ? "They're gone! ✨" : "Nothing wriggling in there ✨", "good");
     else if (improved) setStatus("One left! " + worms[0].sp.the + " is still there 🪱", "good");
     else if (n === 1) setStatus("Uh oh — " + worms[0].sp.the + "! 🪱", "bad");
     else if (worms[0].sp.key === worms[1].sp.key) setStatus("Uh oh — two " + worms[0].sp.name + "s! 🪱", "bad");
@@ -2676,7 +2837,7 @@
       $("freezeTxt").textContent = "Hold";
       $("freezeBtn").firstChild.nodeValue = "❄️ ";
       $("freezeBtn").style.borderColor = "rgba(160,195,240,.34)";
-      MODE = "scanning"; scanT = 0; worms = []; parts = [];
+      MODE = "scanning"; scanT = 0; worms = []; helpers = []; parts = [];
       scanMsgIdx = -1; noisePat = null;
       oriRef = null; navel = null; navelMiss = 0; navelAnnounced = false;
       navelManual = null; navelHintUntil = 0; shakeUntil = 0;
@@ -2708,7 +2869,7 @@
   }
 
   function quit() {
-    MODE = "idle"; running = false; worms = []; parts = [];
+    MODE = "idle"; running = false; worms = []; helpers = []; parts = [];
     isFrozen = false; frozenFrame = null;
     ctx.clearRect(0, 0, W, H);
     stopNoise();

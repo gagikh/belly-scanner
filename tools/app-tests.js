@@ -135,7 +135,13 @@ async function scan(t, foods) {
     t.w.localStorage.clear();
     r = await scan(t, ["candy", "cola"]);
     check("unrepresented junk still gets named", /cola didn't help/.test(r.body), r.body.slice(0, 120));
-    check("no stray audio oscillators on a silent path", true);
+    // the good guys should be there too, and be explained
+    t.w.localStorage.clear();
+    r = await scan(t, ["fruit", "water", "veggies"]);
+    check("eating well brings tummy helpers", /tummy helper/.test(r.body), r.body.slice(0, 120));
+    t.w.localStorage.clear();
+    r = await scan(t, ["cola", "chips", "candy"]);
+    check("a junk-only day brings none", /No tummy helpers/.test(r.body), r.body.slice(-140));
     check("no runtime errors", t.errors.length === 0, t.errors[0]);
     t.w.close();
   }

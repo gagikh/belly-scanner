@@ -128,6 +128,18 @@ shake indicator. Cheap to add, and each sensor does what it's good at.
 
 ## Phase C — product depth
 
+### ~~C0. Gut helpers~~ — done
+
+Only the bad things had a face, so a clean tummy showed an empty screen — the weakest
+possible reward for the behaviour we most want. Caped microbes now appear, one per
+healthy thing eaten, plus two more when the tummy is clear. Eat nothing good and none
+turn up, which is its own message.
+
+They're also true: a gut really does host helpful bacteria that thrive on fibre and
+suffer under sugar. Kept as cartoon microbes rather than tiny superheroes — a person
+standing inside a child's abdomen on an ultrasound-styled screen edges back toward
+"this is showing something real".
+
 ### C1. Translation (Armenian / Russian)
 
 Every string is inline in `index.html`. Lifting them into one table makes adding a
